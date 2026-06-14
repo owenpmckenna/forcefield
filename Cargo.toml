@@ -15,6 +15,9 @@ x25519-dalek = { version = "3.0.0-rc.0", features = ["static_secrets"] }
 base64 = "0.22.1"
 ipnet = { version = "2.12.0", features = ["default", "serde"] }
 openport = { version = "0.3.0", features = ["default", "rand"] }
+tui = "0.19"
+crossterm = "0.25"
+reqwest = { version = "0.13.4", features = ["default", "blocking"] }
 
 [profile.release]
 opt-level = 2

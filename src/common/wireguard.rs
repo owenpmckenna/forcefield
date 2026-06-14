@@ -1,14 +1,20 @@
-use std::net::{IpAddr, Ipv4Addr};
-use ipnet::IpNet;
 use crate::common::cmd::exec;
-use crate::common::ip::Port;
+use crate::common::ip::Port;//Port is type alias for u16
+use ipnet::IpNet;
+use std::net::IpAddr;
 
 //remember to use `ip route get 8.8.8.8` for test and `ip rule`
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct WireguardState {
     pub routes: Vec<Route>,
     pub wg_interfaces: Vec<Wireguard>
 }
+impl WireguardState {
+    pub fn new(routes: Vec<Route>, wg_interfaces: Vec<Wireguard>) -> WireguardState {
+        WireguardState {routes, wg_interfaces}
+    }
+}
+#[derive(Clone)]
 pub struct Route {
     pub addresses: Option<IpNet>,
     pub via: Option<IpAddr>,
@@ -46,6 +52,7 @@ fn empty<T, F>(me: &Option<T>, u: F) -> String where F: FnOnce(&T) -> String {
         u(it)
     } else {"".to_string()}
 }
+#[derive(Clone)]
 pub struct Wireguard {
     pub listen_port: Port,
     pub priv_key: String,
@@ -84,6 +91,7 @@ impl Drop for Wireguard {
         self.kill();
     }
 }
+#[derive(Clone)]
 pub struct WireguardPeer {
     pub public_key: String,
     pub allowed_ips: Vec<IpNet>,
@@ -93,4 +101,18 @@ impl WireguardPeer {
     pub fn new(public_key: String, allowed_ips: Vec<IpNet>, endpoint: Option<(IpAddr, Port)>) -> Self {
         Self { public_key, allowed_ips, endpoint }
     }
+}
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use x25519_dalek::PublicKey;
+use x25519_dalek::StaticSecret;
+
+pub fn generate_wireguard_keys() -> (String, String) {
+    let private_key = StaticSecret::random_from_rng(&mut rand::rng());
+    let public_key = PublicKey::from(&private_key);
+
+    let private_b64 = STANDARD.encode(private_key.to_bytes());
+    let public_b64 = STANDARD.encode(public_key.to_bytes());
+
+    (private_b64, public_b64)
 }

@@ -10,3 +10,15 @@ to disk, and spins up a wg port there with the pub and priv keys. A config port 
 
 Gen should have allowIps be set to a unique value inside 10.69.0.0/16.
 Gens should have two "outgoing states" Default, and Peer(peer)
+
+Connection Logic:
+Generator (vpn provider)                 
+1. Generate local keys (wireguard and temporary RSA)
+2. Encrypt local keys w/ builtin citadel public RSA key
+3. Wait for citadel connection
+Citadel (your workstation)
+4. Connect to generator
+5. (Generator) Send encrypted keys to citadel
+6. (Citadel) Receive and decrypt Generator keys with our private RSA
+7. Send public wireguard keys, port to use, internal network IP, port
+8. (Generator) decrypt configuration, restart using it

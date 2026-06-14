@@ -11,7 +11,7 @@ pub struct Config {
     pub server_id: String,
     ///in 10.69.0.0/16, addr of local wireguard
     pub server_ip: String,
-    #[serde(skip)]
+    #[serde(skip, default)]
     config_key: OnceLock<Key>,
     pub config_key_bytes: Vec<u8>,
     pub port: u16,

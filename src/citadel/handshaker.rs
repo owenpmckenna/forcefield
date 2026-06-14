@@ -1,9 +1,9 @@
-use crate::citadel::state::State;
+use crate::citadel::state::BackendState;
 use crate::common::errors::FFResult;
 use crate::common::setup_handshake::{read_packet, write_packet, ConfigMessage};
 use chacha20poly1305::{Key, KeyInit};
 use rsa::pkcs1::DecodeRsaPrivateKey;
-use rsa::pkcs8::DecodePublicKey;
+use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, TcpStream};
@@ -12,20 +12,21 @@ use std::time::Duration;
 use crate::common::ip::Port;
 
 static PRIV_KEY_TEXT: &str = include_str!("../../key/private_pkcs1.pem");
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Generator {
     pub id: String,
     pub pub_ip: IpAddr,
     pub pub_port: Port,
     pub internal_ip: IpAddr,
-    #[serde(skip)]
+    #[serde(skip, default)]
     config_key: OnceLock<Key>,
     pub config_key_bytes: Vec<u8>,
-    pub wg_public_key: String
+    pub wg_public_key: String,
+    pub description: Option<String>
 }
 impl Generator {
-    pub fn connect_to_generator(ip: String, state: &mut State) -> FFResult<Generator> {
-        let our_private = RsaPrivateKey::from_pkcs1_pem(PRIV_KEY_TEXT)?;
+    pub fn connect_to_generator(ip: String, state: &mut BackendState) -> FFResult<Generator> {
+        let our_private = RsaPrivateKey::from_pkcs8_pem(PRIV_KEY_TEXT)?;
         let ip_addr: SocketAddr = ip.parse()?;
         let mut conn = TcpStream::connect_timeout(
             &ip_addr,
@@ -56,7 +57,8 @@ impl Generator {
             internal_ip: IpAddr::V4(ip),
             config_key: OnceLock::new(),
             config_key_bytes: key_copy,
-            wg_public_key: String::from_utf8(twgc)?
+            wg_public_key: String::from_utf8(twgc)?,
+            description: None
         })
     }
 }

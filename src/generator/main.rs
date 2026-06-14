@@ -26,6 +26,7 @@ pub fn generator_main() {
                                       config.conf_pub_key_int.as_bytes()).unwrap();
     let our_wg_key = citadel_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt,
                                       config.wg_public.as_bytes()).unwrap();
+    println!("waiting for initial connection...");
     while running {
         match attempt_run(&listener, &our_key, &our_wg_key, config.get_priv_key()) {
             Ok(it) => {
@@ -49,10 +50,12 @@ fn attempt_run(listener: &TcpListener, our_key: &Vec<u8>, our_wg_key: &Vec<u8>, 
     //write the u64 size, then our public key, encrypted with the citadel public key
     write_packet(&mut stream, our_key)?;
     write_packet(&mut stream, our_wg_key)?;
+    println!("wrote packets");
 
     let read_buf = read_packet(&mut stream)?;
     let read_buf = key.decrypt(Pkcs1v15Encrypt, &read_buf)?;
     let out: ConfigMessage = serde_json::from_slice(&read_buf)?;
+    println!("read and decrypted config packet. Id: {}, ip: {}", out.server_id, out.server_ip);
     Ok(out)
 }
 fn run(config: Config) {

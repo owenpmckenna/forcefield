@@ -1,7 +1,11 @@
 use std::borrow::Cow;
 use std::process::Command;
+use crate::{Mode, MODE};
 
 pub fn exec(cmd: String) -> String {
+    if MODE == Mode::Generator {
+        println!("executing command... `{}`", cmd)
+    }
     let cmd = Command::new("sh")
         .arg("-c")
         .arg(cmd)

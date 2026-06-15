@@ -1,20 +1,16 @@
-use std::borrow::Cow;
-use std::process::Command;
 use crate::{Mode, MODE};
+use std::process::Command;
 
 pub fn exec(cmd: String) -> String {
     if MODE == Mode::Generator {
         println!("executing command... `{}`", cmd)
     }
-    let cmd = Command::new("sh")
+    let out = Command::new("sh")
         .arg("-c")
         .arg(cmd)
-        .spawn()
+        .output()
         .unwrap();
-    let out = cmd.wait_with_output().unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    if !err.trim().is_empty() {
-        println!("got output from cmd: {}", err)
-    }
-    String::from_utf8_lossy(&out.stdout).to_string()
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    format!("{}{}", err, stdout)
 }

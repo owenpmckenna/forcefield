@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
 use chacha20poly1305::aead::OsRng;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
@@ -13,17 +13,14 @@ pub struct ConfigMessage {
     pub server_ip: String,
     pub port: u16,
     pub citadel_wg_pub: String,
-    pub config_key_bytes: Vec<u8>
 }
 impl ConfigMessage {
     pub fn new(server_id: String, server_ip: String, port: u16, citadel_wg_pub: String) -> ConfigMessage {
-        let key = XChaCha20Poly1305::generate_key(OsRng);
         ConfigMessage {
             server_id,
             server_ip,
             port,
             citadel_wg_pub,
-            config_key_bytes: key.to_vec()
         }
     }
 }

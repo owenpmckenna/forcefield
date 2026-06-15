@@ -1,20 +1,16 @@
 use crate::common::wireguard::generate_wireguard_keys;
+use chacha20poly1305::aead::OsRng;
+use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
 use regex::Regex;
-use rsa::pkcs1::LineEnding;
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
-use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::{env, fs};
 
 #[derive(Serialize, Deserialize)]
 pub struct InitialConfig {
-    pub conf_pub_key_int: String,
-    pub conf_priv_key_int: String,
+    pub config_key_bytes: Vec<u8>,
     #[serde(skip, default)]
-    pub conf_pub_key: OnceLock<RsaPublicKey>,
-    #[serde(skip, default)]
-    pub conf_priv_key: OnceLock<RsaPrivateKey>,
+    pub config_key: OnceLock<Key>,
     pub port: u16,
     pub wg_public: String,
     pub wg_private: String
@@ -38,26 +34,22 @@ impl InitialConfig {
     }
     fn save(conf: &InitialConfig) {
         let str = serde_json::to_string(conf).unwrap();
+        let path = std::env::current_dir().unwrap().join(FILE);
+        println!("writing config to file: {}", path.display());
         fs::write(FILE, str).unwrap();
     }
     pub fn delete() {
         fs::remove_file(FILE).unwrap();
     }
-    pub fn get_pub_key(&self) -> &RsaPublicKey {
-        self.conf_pub_key.get_or_init(|| RsaPublicKey::from_public_key_pem(&self.conf_pub_key_int).unwrap())
-    }
-    pub fn get_priv_key(&self) -> &RsaPrivateKey {
-        self.conf_priv_key.get_or_init(|| RsaPrivateKey::from_pkcs8_pem(&self.conf_priv_key_int).unwrap())
+    pub fn get_key(&self) -> &Key {
+        self.config_key.get_or_init(|| Key::clone_from_slice(&self.config_key_bytes))
     }
     fn init(port: u16) -> InitialConfig {
-        let privk = RsaPrivateKey::new(&mut rand::rng(), 4096).unwrap();
-        let pubk = privk.as_public_key().clone();
         let (wg_private, wg_public) = generate_wireguard_keys();
+        let key: Key  = XChaCha20Poly1305::generate_key(OsRng);
         InitialConfig {
-            conf_pub_key_int: pubk.to_public_key_pem(LineEnding::CRLF).unwrap(),
-            conf_priv_key_int: privk.to_pkcs8_pem(LineEnding::CRLF).unwrap().to_string(),
-            conf_pub_key: OnceLock::from(pubk),
-            conf_priv_key: OnceLock::from(privk),
+            config_key_bytes: key.to_vec(),
+            config_key: OnceLock::new(),
             port,
             wg_private,
             wg_public

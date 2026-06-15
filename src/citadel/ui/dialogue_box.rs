@@ -8,15 +8,17 @@ use tui::text::{Span, Spans};
 use tui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use crate::citadel::state::BackendState;
 use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
+use crate::citadel::ui::ui_main::KeyResult::Handled;
 
 pub struct DialogueBox {
     title: String,
     message: String,
-    light: bool
+    light: bool,
+    scroll: usize
 }
 impl DialogueBox {
     pub fn new(title: String, message: String) -> DialogueBox {
-        DialogueBox { title, message, light: false }
+        DialogueBox { title, message, light: false, scroll: 0 }
     }
 }
 impl RenderWidget for DialogueBox {
@@ -41,13 +43,12 @@ impl RenderWidget for DialogueBox {
             )
             .split(inner_size);
 
-        let error_txt = vec![
-            Spans::from(vec![
-                Span::raw(&self.message),
-            ]),
-            //add more lines if you want
-        ];
-        let entered_text = Paragraph::new(error_txt)
+        let error_txt = self.message.split("\n").into_iter()
+            .map(|it| it.trim())
+            .filter(|it| !it.is_empty())
+            .map(|line| Spans::from(vec![Span::raw(line)]))
+            .collect::<Vec<_>>();
+        let entered_text = Paragraph::new(error_txt[self.scroll.min(error_txt.len() - 1)..error_txt.len()].to_vec())
             .style(Style::default().fg(Color::White).bg(Color::Black))
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: false });
@@ -72,6 +73,14 @@ impl RenderWidget for DialogueBox {
         match key_event.code {
             KeyCode::Enter => {
                 KeyResult::Exited
+            }
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                Handled
+            }
+            KeyCode::Down => {
+                self.scroll = self.scroll + 1;
+                Handled
             }
             _ => {KeyResult::Passup(key_event)}
         }

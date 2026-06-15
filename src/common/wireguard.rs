@@ -1,17 +1,33 @@
+use std::fs;
 use crate::common::cmd::exec;
 use crate::common::ip::Port;//Port is type alias for u16
 use ipnet::IpNet;
 use std::net::IpAddr;
+use std::str::FromStr;
 
 //remember to use `ip route get 8.8.8.8` for test and `ip rule`
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct WireguardState {
     pub routes: Vec<Route>,
-    pub wg_interfaces: Vec<Wireguard>
+    pub wg_interfaces: Vec<Wireguard>,
+    pub old_default_route: Route
 }
+
 impl WireguardState {
-    pub fn new(routes: Vec<Route>, wg_interfaces: Vec<Wireguard>) -> WireguardState {
-        WireguardState {routes, wg_interfaces}
+    pub(crate) fn down(&self) {
+        for route in &self.routes {
+            route.remove_self();
+        }
+        for wg in &self.wg_interfaces {
+            wg.kill();
+        }
+        self.old_default_route.add_self();
+    }
+}
+
+impl WireguardState {
+    pub fn new(routes: Vec<Route>, wg_interfaces: Vec<Wireguard>, old_default_route: Route) -> WireguardState {
+        WireguardState {routes, wg_interfaces, old_default_route}
     }
 }
 #[derive(Clone)]
@@ -42,11 +58,6 @@ impl Route {
         self.move_self("del")
     }
 }
-impl Drop for Route {
-    fn drop(&mut self) {
-        self.remove_self()
-    }
-}
 fn empty<T, F>(me: &Option<T>, u: F) -> String where F: FnOnce(&T) -> String {
     if let Some(it) = me {
         u(it)
@@ -59,15 +70,20 @@ pub struct Wireguard {
     pub pub_key: String,
     ///ex: "wg0"
     pub name: String,
+    pub local_ip: IpAddr,
     pub peers: Vec<WireguardPeer>
 }
 impl Wireguard {
-    pub fn new(listen_port: Port, priv_key: String, pub_key: String, name: String, peers: Vec<WireguardPeer>) -> Self {
-        Self { listen_port, priv_key, pub_key, name, peers }
+    pub fn new(listen_port: Port, priv_key: String, pub_key: String, name: String, local_ip: IpAddr, peers: Vec<WireguardPeer>) -> Self {
+        Self { listen_port, priv_key, pub_key, name, local_ip, peers }
     }
     pub fn spawn(&self) {
         exec(format!("ip link add dev {} type wireguard", self.name));
-        exec(format!("wg set {} listen-port {} private-key {}", self.name, self.listen_port, self.priv_key));
+        exec(format!("ip address add dev {} {}/16", self.name, self.local_ip));
+        exec(format!("wg set {} listen-port {}", self.name, self.listen_port));
+        fs::write("TMPKEY", &self.priv_key).unwrap();
+        exec(format!("wg set {} private-key TMPKEY", self.name));
+        fs::remove_file("TMPKEY").unwrap();
         for peer in &self.peers {
             let addrs = peer.allowed_ips.iter()
                 .map(IpNet::to_string)
@@ -86,11 +102,6 @@ impl Wireguard {
         &self.peers[0]
     }
 }
-impl Drop for Wireguard {
-    fn drop(&mut self) {
-        self.kill();
-    }
-}
 #[derive(Clone)]
 pub struct WireguardPeer {
     pub public_key: String,
@@ -104,6 +115,7 @@ impl WireguardPeer {
 }
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use regex::Regex;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
@@ -115,4 +127,20 @@ pub fn generate_wireguard_keys() -> (String, String) {
     let public_b64 = STANDARD.encode(public_key.to_bytes());
 
     (private_b64, public_b64)
+}
+pub fn get_default_route() -> Route {
+    let out = exec("ip route".into());
+    let routes = out.split("\n");
+    let default_route = routes.collect::<Vec<_>>().first().unwrap().trim().to_string();
+    //default via 192.168.0.1 dev wlan0 proto dhcp src 192.168.0.31 metric 1024
+    let via_regex = Regex::new(r"via ([^ ]+)").unwrap();
+    let dev_regex = Regex::new(r"dev ([^ ]+)").unwrap();
+    let src_regex = Regex::new(r"src ([^ ]+)").unwrap();
+    let via = via_regex.captures(&default_route)
+        .map(|it| IpAddr::from_str(&it[1]).unwrap());
+    let dev = dev_regex.captures(&default_route)
+        .map(|it| it[1].to_string());
+    let src = src_regex.captures(&default_route)
+        .map(|it| IpAddr::from_str(&it[1]).unwrap());
+    Route::new(None, via, dev, src)
 }

@@ -29,7 +29,7 @@ impl Config {
             server_id: cfg_msg.server_id,
             server_ip: cfg_msg.server_ip,
             config_key: OnceLock::new(),
-            config_key_bytes: cfg_msg.config_key_bytes,
+            config_key_bytes: initial_config.config_key_bytes,
             port: cfg_msg.port,
             gen_wg_pub: initial_config.wg_public,
             gen_wg_priv: initial_config.wg_private,

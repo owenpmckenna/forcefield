@@ -1,9 +1,11 @@
 use std::fmt::{Display, Formatter};
+use chacha20poly1305::aead;
 
 #[derive(Debug)]
 pub enum FFError {
     IP4Deserial,
-    OutOfIds
+    OutOfIds,
+    CipherError(aead::Error)
 }
 
 impl Display for FFError {

@@ -65,7 +65,7 @@ impl RenderWidget for RouteSetupScreen {
                     .as_ref(),
             )
             .split(size);
-        let items = (0..self.current_selected.len())
+        let items = (0..self.backend_state.known_generators.len())
             .map(|id| self.selected_text(id))
             .map(ListItem::new).collect::<Vec<_>>();
         let picker = List::new(items)
@@ -106,9 +106,13 @@ impl RenderWidget for RouteSetupScreen {
             KeyCode::Down => {self.current += 1; Handled}
             KeyCode::Up => {self.current -= 1; Handled}
             KeyCode::Enter => {
+                if self.current_selected.is_empty() {
+                    return Handled
+                }
                 match state.create_wg_setup(self.current_selected.clone()) {
                     Ok(_) => {
-                        let output = exec("ip route".into());
+                        let out = exec("ip route".into());
+                        let output = format!("`ip route` responded with {} lines:\n{}", out.len(), out);
                         ReplaceScreen(Box::new(DialogueBox::new("Wireguard Setup Successful".to_string(), output)))
                     }
                     Err(it) => {

@@ -1,7 +1,7 @@
 use crate::citadel::state::BackendState;
-use crate::common::errors::FFResult;
+use crate::common::errors::{FFError, FFResult};
 use crate::common::setup_handshake::{read_packet, write_packet, ConfigMessage};
-use chacha20poly1305::{Key, KeyInit};
+use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305};
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::OnceLock;
 use std::time::Duration;
+use chacha20poly1305::aead::{Aead, OsRng};
 use crate::common::ip::Port;
 
 static PRIV_KEY_TEXT: &str = include_str!("../../key/private_pkcs1.pem");
@@ -35,19 +36,22 @@ impl Generator {
         conn.set_read_timeout(Some(Duration::new(15, 0)))?;
         conn.set_write_timeout(Some(Duration::new(15, 0)))?;
 
-        //they write their public key, then their public wg key
-        let their_public_key = read_packet(&mut conn)?;
+        //they write their config key, then their public wg key
+        let their_config_key = read_packet(&mut conn)?;
         let twgc = read_packet(&mut conn)?;
-        let their_public_key = our_private.decrypt(Pkcs1v15Encrypt, &their_public_key)?;
+        let their_config_key = our_private.decrypt(Pkcs1v15Encrypt, &their_config_key)?;
         let twgc = our_private.decrypt(Pkcs1v15Encrypt, &twgc)?;
 
-        //we turn their public key into a useful cipher struct, then use that to send configs.
-        let gen_public_key = RsaPublicKey::from_public_key_pem(&String::from_utf8(their_public_key)?)?;
+        //we turn their config key into a useful cipher struct, then use that to send configs.
+        let config_key: Key = Key::clone_from_slice(&their_config_key);
+        let config_cipher = XChaCha20Poly1305::new(&config_key);
+        let nonce = XChaCha20Poly1305::generate_nonce(OsRng);
 
         let (ip, str) = state.next_id()?;
         let msg = ConfigMessage::new(str.clone(), ip.to_string(), ip_addr.port(), state.our_wg_pub.clone());
-        let key_copy = msg.config_key_bytes.clone();
-        let bytes = gen_public_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, serde_json::to_string(&msg)?.as_bytes())?;
+        let bytes = config_cipher.encrypt(&nonce, serde_json::to_string(&msg)?.as_bytes())
+            .map_err(|it| Box::new(FFError::CipherError(it)))?;
+        write_packet(&mut conn, &nonce.as_slice())?;
         write_packet(&mut conn, &bytes)?;
 
         Ok(Generator {
@@ -56,7 +60,7 @@ impl Generator {
             pub_port: ip_addr.port(),
             internal_ip: IpAddr::V4(ip),
             config_key: OnceLock::new(),
-            config_key_bytes: key_copy,
+            config_key_bytes: config_key.to_vec(),
             wg_public_key: String::from_utf8(twgc)?,
             description: None
         })

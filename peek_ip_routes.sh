@@ -1,0 +1,8 @@
+echo "------CITADEL------"
+sudo docker exec -it citadel sh -c "ip route"
+echo "-------GEN 1-------"
+sudo docker exec -it gen_1 sh -c "ip route"
+echo "-------GEN 2-------"
+sudo docker exec -it gen_2 sh -c "ip route"
+echo "-------GEN 3-------"
+sudo docker exec -it gen_3 sh -c "ip route"

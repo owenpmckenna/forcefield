@@ -1,17 +1,15 @@
-use std::{env, fs};
 use crate::citadel::handshaker::Generator;
+use crate::common::cmd::exec;
 use crate::common::errors::{FFError, FFResult};
 use crate::common::wireguard::{generate_wireguard_keys, get_default_route, Route, Wireguard, WireguardPeer, WireguardState};
 use ipnet::{IpNet, PrefixLenError};
 use openport::pick_random_unused_port;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use crate::common::cmd::exec;
-use crate::generator::init_config::InitialConfig;
+use std::fs;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BackendState {
@@ -20,6 +18,7 @@ pub struct BackendState {
     pub known_generators: Vec<Generator>,
     #[serde(skip, default)]
     pub current_wg_setup: Option<WireguardState>,
+    pub current_wg_ids: Vec<String>
 }
 static FILE: &str = "conf.conf";
 impl BackendState {
@@ -35,6 +34,7 @@ impl BackendState {
                     our_wg_priv: wg_private,
                     known_generators: vec![],
                     current_wg_setup: None,
+                    current_wg_ids: vec![]
                 };
                 data.save();
                 data
@@ -62,10 +62,23 @@ impl BackendState {
             Ok((ip, id))
         }
     }
+    fn is_everything(addresses: &IpNet) -> bool {
+        addresses.prefix_len() == 0
+    }
+    fn is_everything_opt(addresses: &Option<IpNet>) -> bool {
+        if let Some(it) = addresses {
+            Self::is_everything(it)
+        } else {true}
+    }
     ///list is a list, in order, of which servers to use. it's indexes of known_generators
-    pub fn create_wg_setup(&mut self, list: Vec<usize>) -> FFResult<()> {
+    pub fn create_wg_setup(&mut self, list: Vec<usize>, addresses: String) -> FFResult<()> {
+        let addresses = IpNet::from_str(&addresses)?;
         if let Some(setup) = self.current_wg_setup.take() {
             setup.down();
+        }
+        self.current_wg_ids = vec![];
+        if list.is_empty() {
+            return Ok(());
         }
 
         let mut routes_to_add = vec![];
@@ -87,13 +100,15 @@ impl BackendState {
             //well, this won't work if there's no endpoint...
             let endpoint = peers[i+1].endpoint.unwrap().0;
             let internal_ip = self.known_generators[list[i]].internal_ip;
-            peers[i].allowed_ips.push(format!("{}/32", endpoint).parse().unwrap());
-            peers[i].allowed_ips.push(format!("{}/32", internal_ip).parse().unwrap());
+            peers[i].allowed_ips.push(format!("{}/32", endpoint).parse()?);
+            peers[i].allowed_ips.push(format!("{}/32", internal_ip).parse()?);
         }
         let wireguard = Wireguard::new(pick_random_unused_port().unwrap(), self.our_wg_priv.clone(), self.our_wg_pub.clone(), "uwu0".to_string(), IpAddr::from_str("10.69.0.1").unwrap(), peers);
         let peers = &wireguard.peers;
         let default = get_default_route();
-        default.remove_self();
+        if Self::is_everything(&addresses) {
+            default.remove_self();
+        }
         //add first route, route to first generator over *normal network*
         routes_to_add.push(Route::new(
             simple_peer_to_cidr(peers.first().unwrap())?,
@@ -113,7 +128,7 @@ impl BackendState {
         let l_id = list.len() - 1;
         //wireguard now knows how to reach each wireguard server, now add the default route to go to the last one.
         routes_to_add.push(Route::new(
-            None,
+            Some(addresses),
             Some(generators[l_id].internal_ip),
             Some("uwu0".to_string()),
             Some("10.69.0.1".parse()?)
@@ -128,6 +143,7 @@ impl BackendState {
             .filter(|it| it.endpoint.unwrap().0.is_ipv6()).count();
         exec(format!("ip link set uwu0 mtu {}", 1500 - 60 * ipv4s - 80 * ipv6s));
         self.current_wg_setup = Some(WireguardState::new(routes_to_add, vec![wireguard], default));
+        self.current_wg_ids = list.into_iter().map(|it| self.known_generators[it].id.clone()).collect();
         Ok(())
     }
 }

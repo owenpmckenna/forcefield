@@ -5,7 +5,10 @@ use chacha20poly1305::aead;
 pub enum FFError {
     IP4Deserial,
     OutOfIds,
-    CipherError(aead::Error)
+    CipherError(aead::Error),
+    NoGeneratorFoundError(String),
+    WrongResponseType,
+    WrongHeartbeat
 }
 
 impl Display for FFError {

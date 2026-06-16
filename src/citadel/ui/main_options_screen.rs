@@ -1,16 +1,16 @@
+use crate::citadel::state::BackendState;
+use crate::citadel::ui::connect_to_generator_screen::ConnectToGeneratorScreen;
+use crate::citadel::ui::dialogue_box::DialogueBox;
+use crate::citadel::ui::setup_route::RouteSetupScreen;
 use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::io::Stdout;
-use rsa::Error::NprimesTooSmall;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Constraint, Direction, Layout};
 use tui::style::{Color, Style};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
 use tui::Frame;
-use crate::citadel::state::BackendState;
-use crate::citadel::ui::connect_to_generator_screen::ConnectToGeneratorScreen;
-use crate::citadel::ui::dialogue_box::DialogueBox;
-use crate::citadel::ui::setup_route::RouteSetupScreen;
+use crate::citadel::ui::control_connection_screen::ControlConnectionScreen;
 
 pub struct MainOptionsScreen {
     current: usize
@@ -28,7 +28,7 @@ impl MainOptionsScreen {
     }
 }
 impl RenderWidget for MainOptionsScreen {
-    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>) {
+    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, _: &mut BackendState) {
         self.current += 4;
         self.current %= 4;
 
@@ -68,6 +68,10 @@ impl RenderWidget for MainOptionsScreen {
             KeyCode::Enter => {
                 let screen: Option<Box<dyn RenderWidget>> = if self.current == 0 {
                     Some(Box::new(ConnectToGeneratorScreen::new()))
+                } else if self.current == 1 && !state.known_generators.is_empty() {
+                    Some(Box::new(ControlConnectionScreen::new()))
+                } else if self.current == 1 && state.known_generators.is_empty() {
+                    Some(Box::new(DialogueBox::new("Error".into(), "No Generators Available".into())))
                 } else if self.current == 2 && !state.known_generators.is_empty() {
                     Some(Box::new(RouteSetupScreen::new(state)))
                 } else if self.current == 2 && state.known_generators.is_empty() {

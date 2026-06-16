@@ -1,11 +1,11 @@
+use crate::common::errors::FFResult;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
-use chacha20poly1305::aead::OsRng;
-use rand::rngs::StdRng;
-use serde::{Deserialize, Serialize};
-use crate::common::errors::FFResult;
+use chacha20poly1305::aead::{Aead, OsRng};
+use chacha20poly1305::{AeadCore, XChaCha20Poly1305, XNonce};
+use crate::common::errors::FFError::CipherError;
 
 #[derive(Serialize, Deserialize)]
 pub struct ConfigMessage {
@@ -36,4 +36,19 @@ pub fn write_packet(stream: &mut TcpStream, data: &[u8]) -> FFResult<()> {
     stream.write(&(data.len() as u64).to_le_bytes())?;
     stream.write(&data)?;
     Ok(())
+}
+pub fn write_encrypted_data(stream: &mut TcpStream, cipher: &XChaCha20Poly1305, data: &[u8]) -> FFResult<()> {
+    let nonce = XChaCha20Poly1305::generate_nonce(OsRng);
+    let ciphertext = cipher.encrypt(&nonce, data)
+        .map_err(|it| CipherError(it))?;
+    write_packet(stream, &nonce)?;
+    write_packet(stream, &ciphertext)?;
+    Ok(())
+}
+pub fn read_encrypted_data(stream: &mut TcpStream, cipher: &XChaCha20Poly1305) -> FFResult<Vec<u8>> {
+    let nonce_data = read_packet(stream)?;
+    let nonce = XNonce::clone_from_slice(&nonce_data);
+    let ciphertext = read_packet(stream)?;
+    Ok(cipher.decrypt(&nonce, ciphertext.as_slice())
+        .map_err(|it| CipherError(it))?)
 }

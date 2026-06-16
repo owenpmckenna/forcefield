@@ -18,7 +18,7 @@ pub enum KeyResult {
     ReplaceScreen(Box<dyn RenderWidget>)
 }
 pub trait RenderWidget {
-    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>);
+    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState);
     fn handle_input(&mut self, key_event: KeyEvent, state: &mut BackendState) -> KeyResult;
 }
 pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
@@ -34,7 +34,7 @@ pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
     while running {
         terminal.draw(|rect| {
             if let Some(last) = stack.last_mut() {
-                last.render(rect);
+                last.render(rect, state);
             } else {running = false;}
         })?;
         if running && event::poll(Duration::from_millis(500)).expect("poll works") {

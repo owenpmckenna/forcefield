@@ -1,9 +1,8 @@
-use std::io::Read;
-use std::os::unix::raw::ino_t;
-use std::time::{Instant, SystemTime};
+use crate::common::errors::FFResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Error;
-use crate::common::errors::FFResult;
+use std::io::Read;
+use std::time::SystemTime;
 
 pub type Port = u16;
 pub enum IpQuery {

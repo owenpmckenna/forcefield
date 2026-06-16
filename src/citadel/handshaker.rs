@@ -1,16 +1,15 @@
 use crate::citadel::state::BackendState;
 use crate::common::errors::{FFError, FFResult};
+use crate::common::ip::Port;
 use crate::common::setup_handshake::{read_packet, write_packet, ConfigMessage};
+use chacha20poly1305::aead::{Aead, OsRng};
 use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305};
-use rsa::pkcs1::DecodeRsaPrivateKey;
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
-use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
+use rsa::pkcs8::DecodePrivateKey;
+use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::OnceLock;
 use std::time::Duration;
-use chacha20poly1305::aead::{Aead, OsRng};
-use crate::common::ip::Port;
 
 static PRIV_KEY_TEXT: &str = include_str!("../../key/private_pkcs1.pem");
 #[derive(Serialize, Deserialize, Clone)]
@@ -26,6 +25,13 @@ pub struct Generator {
     pub description: Option<String>
 }
 impl Generator {
+    pub fn get_config_key(&self) -> Key {
+        self.config_key.get_or_init(|| Key::clone_from_slice(&self.config_key_bytes)).clone()
+    }
+    pub fn get_cipher(&self) -> XChaCha20Poly1305 {
+        let key: &Key = self.config_key.get_or_init(|| Key::clone_from_slice(&self.config_key_bytes));
+        XChaCha20Poly1305::new(key)
+    }
     pub fn connect_to_generator(ip: String, state: &mut BackendState) -> FFResult<Generator> {
         let our_private = RsaPrivateKey::from_pkcs8_pem(PRIV_KEY_TEXT)?;
         let ip_addr: SocketAddr = ip.parse()?;

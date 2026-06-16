@@ -10,7 +10,7 @@ use std::str::FromStr;
 pub struct WireguardState {
     pub routes: Vec<Route>,
     pub wg_interfaces: Vec<Wireguard>,
-    pub old_default_route: Route
+    pub old_default_route: Route,
 }
 
 impl WireguardState {
@@ -21,7 +21,19 @@ impl WireguardState {
         for wg in &self.wg_interfaces {
             wg.kill();
         }
-        self.old_default_route.add_self();
+        let reset_default = Self::is_everything_opt(&self.routes.last().unwrap().addresses);
+        //if the last route is for everything, then we deleted the default route last time
+        if reset_default {
+            self.old_default_route.add_self();
+        }
+    }
+    fn is_everything(addresses: &IpNet) -> bool {
+        addresses.prefix_len() == 0
+    }
+    fn is_everything_opt(addresses: &Option<IpNet>) -> bool {
+        if let Some(it) = addresses {
+            Self::is_everything(it)
+        } else {true}
     }
 }
 
@@ -115,7 +127,7 @@ impl WireguardPeer {
 }
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use regex::Regex;
+use regex_lite::Regex;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 

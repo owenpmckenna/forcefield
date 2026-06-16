@@ -1,14 +1,19 @@
 ./full_down.sh &> /dev/null
 
+echo "[+] reset completed. building..."
 echo "generator" > feature_flag
-cargo build --release
+RUST_BACKTRACE=1 RUSTFLAGS="--cfg generator" cargo +nightly build -Z build-std --release
 cp ./target/release/forcefield ./testing/gen_1/forcefield_8080
 cp ./target/release/forcefield ./testing/gen_2/forcefield_8080
 cp ./target/release/forcefield ./testing/gen_3/forcefield_8080
 
+echo "[+] built generator. building citadel..."
+
 echo "citadel" > feature_flag
-cargo build --release
+RUST_BACKTRACE=1 RUSTFLAGS="--cfg citadel" cargo +nightly build -Z build-std --release
 cp ./target/release/forcefield ./testing/citadel/forcefield
+
+echo "[+] built citadel. building docker..."
 
 sudo docker build -t wireguard_box .
 sudo docker network create --subnet 192.168.2.0/24 wg-network

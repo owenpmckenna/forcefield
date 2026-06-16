@@ -1,7 +1,6 @@
 use crate::common::wireguard::generate_wireguard_keys;
 use chacha20poly1305::aead::OsRng;
 use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::{env, fs};
@@ -23,9 +22,14 @@ impl InitialConfig {
                 serde_json::from_str(&it).unwrap()
             }
             Err(_) => {
-                let pr = Regex::new("[0-9]+$").unwrap();
                 let file = &env::args().collect::<Vec<_>>()[0];
-                let port: u16 = pr.find(file).unwrap().as_str().parse().unwrap();
+                let txt = file.split("_").last().unwrap();
+                let port: u16 = match txt.parse() {
+                    Ok(it) => {it},
+                    Err(it) => {
+                        panic!("error parsing {}: {}! Filename must be like forcefield_8080", txt, it)
+                    }
+                };
                 let data = Self::init(port);
                 Self::save(&data);
                 data

@@ -1,5 +1,5 @@
-use std::ascii::AsciiExt;
-use std::env;
+#![feature(fn_traits)]
+
 use crate::citadel::main::citadel_main;
 use crate::generator::main::generator_main;
 use crate::Mode::{Citadel, Generator};
@@ -14,19 +14,14 @@ pub enum Mode {
     Citadel
 }
 const fn get_mode() -> Mode {
-    let str = include_str!("../feature_flag");
-    if str.eq_ignore_ascii_case("citadel\n") {
-        Citadel
-    } else if str.eq_ignore_ascii_case("generator\n") {
-        Generator
-    } else {
-        panic!("feature_flag wrong!")
-    }
+    #[cfg(generator)]
+    return Mode::Generator;
+    #[cfg(citadel)]
+    return Mode::Citadel;
+    Citadel
 }
 pub const MODE: Mode = get_mode();
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    println!("args: {:?}", args);
     if MODE == Generator {
         generator_main();
     } else {

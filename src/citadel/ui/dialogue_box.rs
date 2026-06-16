@@ -17,12 +17,12 @@ pub struct DialogueBox {
     scroll: usize
 }
 impl DialogueBox {
-    pub fn new(title: String, message: String) -> DialogueBox {
-        DialogueBox { title, message, light: false, scroll: 0 }
+    pub fn new(title: &str, message: &str) -> DialogueBox {
+        DialogueBox { title: title.to_string(), message: message.to_string(), light: false, scroll: 0 }
     }
 }
 impl RenderWidget for DialogueBox {
-    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>) {
+    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, _: &mut BackendState) {
         let surround = Block::default()
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::White))
@@ -71,7 +71,7 @@ impl RenderWidget for DialogueBox {
 
     fn handle_input(&mut self, key_event: KeyEvent, _: &mut BackendState) -> KeyResult {
         match key_event.code {
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Esc => {
                 KeyResult::Exited
             }
             KeyCode::Up => {

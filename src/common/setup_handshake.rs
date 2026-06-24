@@ -12,6 +12,7 @@ pub struct ConfigMessage {
     pub server_id: String,
     pub server_ip: String,
     pub port: u16,
+    pub config_port: u16,
     pub citadel_wg_pub: String,
 }
 impl ConfigMessage {
@@ -20,6 +21,7 @@ impl ConfigMessage {
             server_id,
             server_ip,
             port,
+            config_port: port + 1,
             citadel_wg_pub,
         }
     }
@@ -33,8 +35,8 @@ pub fn read_packet(stream: &mut TcpStream) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(read_buf)
 }
 pub fn write_packet(stream: &mut TcpStream, data: &[u8]) -> FFResult<()> {
-    stream.write(&(data.len() as u64).to_le_bytes())?;
-    stream.write(&data)?;
+    stream.write_all(&(data.len() as u64).to_le_bytes())?;
+    stream.write_all(data)?;
     Ok(())
 }
 pub fn write_encrypted_data(stream: &mut TcpStream, cipher: &XChaCha20Poly1305, data: &[u8]) -> FFResult<()> {

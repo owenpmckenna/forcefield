@@ -9,19 +9,22 @@ use tui::style::{Color, Style};
 use tui::text::{Span, Spans, Text};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 use crate::citadel::control_connection::ControlConnection;
-use crate::citadel::handshaker::Generator;
+use crate::citadel::handshaker::{Endpoint, Generator};
 use crate::citadel::state::BackendState;
 use crate::citadel::ui::cursor::Cursor;
 use crate::citadel::ui::dialogue_box::DialogueBox;
+use crate::citadel::ui::generator_control_screen::GeneratorControlScreen;
 use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
-use crate::citadel::ui::ui_main::KeyResult::{Exited, Handled, Passup};
+use crate::citadel::ui::ui_main::KeyResult::{AddScreen, Exited, Handled, Passup};
 use crate::common::errors::FFResult;
+use crate::common::wireguard::{get_routes, Route};
 
 pub struct ControlConnectionScreen {
     is_on_preroutes: bool,
     preroute_selected: usize,
     direct_addr: String,
-    direct_addr_cursor: Cursor<Self>
+    direct_addr_cursor: Cursor<Self>,
+    routes: Vec<Route>
 }
 impl ControlConnectionScreen {
     pub fn new() -> ControlConnectionScreen {
@@ -29,12 +32,13 @@ impl ControlConnectionScreen {
             is_on_preroutes: true,
             preroute_selected: 0,
             direct_addr: "".to_string(),
-            direct_addr_cursor: Cursor::new(|it: &Self| !it.is_on_preroutes).set_deactive_full_text()
+            direct_addr_cursor: Cursor::new(|it: &Self| !it.is_on_preroutes).set_deactive_full_text(),
+            routes: get_routes()
         }
     }
     fn is_device_available(state: &BackendState, generator: &Generator) -> Option<SocketAddr> {
         let ip = generator.internal_ip;
-        let address = SocketAddr::new(ip, generator.pub_port - 1);
+        let address = SocketAddr::new(ip, generator.config_port);
         if let Some(it) = &state.current_wg_setup {
             for route in &it.routes {
                 if let Some(it) = route.via && it.eq(&ip) {
@@ -70,7 +74,7 @@ impl RenderWidget for ControlConnectionScreen {
                 Style::default().fg(Color::Blue)
             } else {Style::default().fg(Color::Gray)};
             let desc = ge.description.clone().map(|it| format!(" - {}", it)).unwrap_or("".to_string());
-            ListItem::new(Text::styled(format!("{}: {}{}", ge.id, ge.pub_ip, desc), style))
+            ListItem::new(Text::styled(format!("{}: {}{}", ge.id, ge.internal_ip, desc), style))
         }).collect();
         let generators = List::new(items)
             .style(Style::default().fg(Color::White))
@@ -82,9 +86,9 @@ impl RenderWidget for ControlConnectionScreen {
                     .border_type(BorderType::Plain),
             )
             .highlight_symbol("> ");
-        if !available_device_indexes.is_empty() && self.is_on_preroutes {
+        if /* !available_device_indexes.is_empty() && */ self.is_on_preroutes {
             let mut list_state = ListState::default();
-            list_state.select(Some(available_device_indexes[self.preroute_selected]));
+            list_state.select(Some(/*available_device_indexes[*/self.preroute_selected/*]*/));
             rect.render_stateful_widget(generators, vertical_layout[0], &mut list_state);
         } else {
             rect.render_widget(generators, vertical_layout[0]);
@@ -103,9 +107,10 @@ impl RenderWidget for ControlConnectionScreen {
                 Handled
             },
             Up | KeyCode::Down => {
-                let available_device_indexes = Self::get_available_device_indexes(state);
-                let len = available_device_indexes.len();
-                if !self.is_on_preroutes || available_device_indexes.is_empty() {
+                //let available_device_indexes = Self::get_available_device_indexes(state);
+                //let len = available_device_indexes.len();
+                let len = state.known_generators.len();
+                if !self.is_on_preroutes /*|| available_device_indexes.is_empty()*/ {
                     return Handled
                 }
                 self.preroute_selected = (self.preroute_selected + if key_event.code == Up {len - 1} else {len + 1}) % len;
@@ -120,25 +125,32 @@ impl RenderWidget for ControlConnectionScreen {
             },
             KeyCode::Enter => {
                 let addr = if self.is_on_preroutes {
-                    let available_device_indexes = Self::get_available_device_indexes(state);
-                    if available_device_indexes.is_empty() {
-                        return KeyResult::AddScreen(Box::new(DialogueBox::new("Error", "No devices directly connected by Wireguard")))
-                    }
-                    let ge = &state.known_generators[available_device_indexes[self.preroute_selected]];
-                    SocketAddr::new(ge.internal_ip, ge.pub_port + 1)
+                    //let available_device_indexes = Self::get_available_device_indexes(state);
+                    //if available_device_indexes.is_empty() {
+                    //    return AddScreen(Box::new(DialogueBox::new("Error", "No devices directly connected by Wireguard")))
+                    //}
+                    let ge = &state.known_generators[/*available_device_indexes[*/self.preroute_selected/*]*/];
+                    SocketAddr::new(ge.internal_ip, ge.config_port)
                 } else {
                     if let Ok(it) = self.direct_addr.parse() {
+                        let end = Endpoint::from_initial_ip(it, state.known_generators.last());
+                        let gene: &mut Generator = &mut state.known_generators[self.preroute_selected];
+                        gene.endpoints.push(end);
                         it
                     } else {
-                        return KeyResult::AddScreen(Box::new(DialogueBox::new("Error", "Invalid Ip/Port Entered")))
+                        return AddScreen(Box::new(DialogueBox::new("Error", "Invalid Ip/Port Entered")))
                     }
                 };
+                if !Self::get_available_device_indexes(state).contains(&self.preroute_selected) && self.is_on_preroutes {
+                    let ge = &state.known_generators[self.preroute_selected];
+                    return AddScreen(Box::new(GeneratorControlScreen::new(ge.id.clone(), None, state)))
+                }
                 match ControlConnection::connect(addr.clone(), &state) {
                     Ok(it) => {
-                        KeyResult::AddScreen(Box::new(DialogueBox::new("Connected successfully!", &format!("successfully connected to device {}", it.server_id))))
+                        AddScreen(Box::new(GeneratorControlScreen::new(it.server_id.clone(), Some(it), state)))
                     }
                     Err(it) => {
-                        KeyResult::AddScreen(Box::new(DialogueBox::new("Error", &format!("could not connect to device - `{}`", it))))
+                        AddScreen(Box::new(DialogueBox::new("Error", &format!("could not connect to device - `{}`", it))))
                     }
                 }
             }

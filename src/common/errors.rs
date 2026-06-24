@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 use chacha20poly1305::aead;
+use icmp_socket::packet::IcmpPacketBuildError;
 
 #[derive(Debug)]
 pub enum FFError {
@@ -8,7 +9,10 @@ pub enum FFError {
     CipherError(aead::Error),
     NoGeneratorFoundError(String),
     WrongResponseType,
-    WrongHeartbeat
+    WrongHeartbeat,
+    BadGetIp(String),
+    GenShutdownWrong(String),
+    ICMPPacketError(IcmpPacketBuildError)
 }
 
 impl Display for FFError {

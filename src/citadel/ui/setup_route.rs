@@ -12,15 +12,18 @@ use tui::style::{Color, Style};
 use tui::text::{Span, Spans, Text};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use tui::Frame;
+use crate::citadel::handshaker::Endpoint;
 use crate::citadel::ui::cursor::Cursor;
+use crate::common::wireguard::{get_routes, Route};
 
 pub struct RouteSetupScreen {
     current: usize,
-    current_selected: Vec<usize>,
+    current_selected: Vec<(usize, Endpoint)>,
     mode: Mode,
     settings_current: usize,
     target_address: String,
-    target_addr_cursor: Cursor<RouteSetupScreen>
+    target_addr_cursor: Cursor<RouteSetupScreen>,
+    routes: Vec<Route>
 }
 #[derive(Eq, PartialEq)]
 enum Mode {
@@ -29,41 +32,82 @@ enum Mode {
 }
 impl RouteSetupScreen {
     pub fn new(state: &mut BackendState) -> Self {
-        let current_selected = state.current_wg_ids.iter().map(|it|
-            state.known_generators.iter().position(|g| g.id.eq(it)).expect(&format!("could not find generator for id {}", it))
+        let current_selected: Vec<(usize, Endpoint)> = state.current_wg_ids.iter().enumerate().map(|(index, it)|
+            (state.known_generators.iter().position(|g| g.id.eq(it)).unwrap(), state.endpoints_used[index].clone())
         ).collect();
         let target_addr_cursor = Cursor::new(|it: &RouteSetupScreen| it.mode == Mode::Settings && it.settings_current == 0);
-        Self { current: 0, current_selected, mode: Mode::RoutePicker, settings_current: 0, target_address: "0.0.0.0/0".to_string(), target_addr_cursor }
+        let routes = get_routes();
+        let mut se = Self { current: 0, current_selected, mode: Mode::RoutePicker, settings_current: 0, target_address: "0.0.0.0/0".to_string(), target_addr_cursor, routes };
+        se.current = if let Some((id, _)) = se.current_selected.last() {
+            *id
+        } else {*se.get_allowed_ids(state).get(0).unwrap_or(&0)};
+        se
     }
-    fn alternate_selected(&mut self) {
+    fn current_selected_to_ids<'a>(&self, state: &'a BackendState) -> Vec<&'a String> {
+        self.current_selected.iter().map(|it| &state.known_generators[it.0].id).collect()
+    }
+    fn get_allowed_ids(&self, state: &BackendState) -> Vec<usize> {
+        let mut data = Vec::with_capacity(state.known_generators.len());
+        for i in 0..state.known_generators.len() {
+            if let Some((id, _)) = self.current_selected.last() && *id == i {
+                data.push(i);
+                continue
+            }
+            if self.current_selected.iter().position(|it| it.0 == i).is_some() {
+                continue;
+            }
+            let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
+            let available_routes = last_id.as_ref().map(|it| state.get_by_id(&it)).flatten()
+                .map(|it| it.probable_routes.lock().ok()).flatten();
+            if state.known_generators[i].find_best_endpoint(&self.routes, Err(last_id)).is_none() {
+                continue;
+            }
+            data.push(i);
+        }
+        data
+    }
+    fn alternate_selected(&mut self, state: &BackendState) {
         if let Some(ind) = self.is_selected(self.current) {
             self.current_selected.remove(ind);
         } else {
-            self.current_selected.push(self.current);
+            let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
+            let best = state.known_generators[self.current].find_best_endpoint(&self.routes, Err(last_id));
+            self.current_selected.push((self.current, best.unwrap().clone()));
         }
     }
     fn is_selected(&self, index: usize) -> Option<usize> {
-        self.current_selected.iter().position(|it| *it == index)
+        self.current_selected.iter().position(|(i, _)| *i == index)
     }
-    fn selected_style(&self, index: usize) -> Style {
+    fn selected_style(&self, index: usize, has_route: bool) -> Style {
         if self.is_selected(index).is_some() {
             Style::default().fg(Color::Blue)
-        } else {
+        } else if has_route {
             Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
         }
     }
     fn selected_text(&self, state: &mut BackendState, index: usize) -> Text {
-        let style = self.selected_style(index);
+        let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
+        let best = state.known_generators[index].find_best_endpoint(&self.routes, Err(last_id));
+        let style = self.selected_style(index, best.is_some());
         let it = &state.known_generators[index];
-        let desc = match &it.description {
-            None => {""}
-            Some(it) => {&format!(" - {}", it)}
-        };
-        Text::styled(format!("{}: {}{}", it.id, it.pub_ip, desc), style)
+        Text::styled(it.get_generator_text(&best), style)
     }
-    fn increment_selected(&mut self, increment: bool) {
+    fn safe_inc_selected(&mut self, increment: bool, gens: usize) {
+        if increment {self.current += 1;} else {self.current -= 1;}
+        self.current += gens;
+        self.current %= gens;
+    }
+    fn increment_selected(&mut self, increment: bool, state: &BackendState) {
         match self.mode {
-            Mode::RoutePicker => {if increment {self.current += 1;} else {self.current -= 1;}}
+            Mode::RoutePicker => {
+                let allowed = self.get_allowed_ids(state);
+                self.safe_inc_selected(increment, state.known_generators.len());
+                while !allowed.contains(&self.current) {
+                    self.safe_inc_selected(increment, state.known_generators.len());
+                }
+            }
             Mode::Settings => {if increment {self.settings_current += 1;} else {self.settings_current -= 1;}}
         }
     }
@@ -72,8 +116,6 @@ impl RouteSetupScreen {
 
 impl RenderWidget for RouteSetupScreen {
     fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState) {
-        self.current += state.known_generators.len();
-        self.current %= state.known_generators.len();
         self.settings_current += 1;//will add more later, probably.
         self.settings_current %= 1;
 
@@ -119,7 +161,7 @@ impl RenderWidget for RouteSetupScreen {
         rect.render_stateful_widget(picker, chunks[0], &mut list_state);
 
         let picked_list_text = self.current_selected.iter().map(|it|
-            Spans::from(vec![Span::raw(format!("{}", state.known_generators[*it].id))])
+            Spans::from(vec![Span::raw(format!("{} - {}", state.known_generators[it.0].id, it.1))])
         ).collect::<Vec<_>>();
         let picked_list = Paragraph::new(picked_list_text)
             .style(Style::default().fg(Color::White).bg(Color::Black))
@@ -158,8 +200,8 @@ impl RenderWidget for RouteSetupScreen {
     }
     fn handle_input(&mut self, key_event: KeyEvent, state: &mut BackendState) -> KeyResult {
         match key_event.code {
-            KeyCode::Down => { self.increment_selected(true); Handled}
-            KeyCode::Up => { self.increment_selected(false); Handled}
+            KeyCode::Down => { self.increment_selected(true, state); Handled}
+            KeyCode::Up => { self.increment_selected(false, state); Handled}
             KeyCode::Enter => {
                 if self.mode == Mode::RoutePicker {
                     self.mode = Mode::Settings;
@@ -181,7 +223,7 @@ impl RenderWidget for RouteSetupScreen {
                 match self.mode {
                     Mode::RoutePicker => {
                         if it == ' ' {
-                            self.alternate_selected();
+                            self.alternate_selected(state);
                         }
                     }
                     Mode::Settings => {

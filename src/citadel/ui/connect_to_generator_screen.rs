@@ -74,14 +74,15 @@ impl RenderWidget for ConnectToGeneratorScreen {
                 KeyResult::Handled
             },
             KeyCode::Enter => {
-                match Generator::connect_to_generator(self.entered_ip.clone(), state) {
+                let ip = self.entered_ip.clone();
+                match Generator::connect_to_generator(ip.clone(), state) {
                     Ok(mut it) => {
-                        let ip = IpQuery::query(&it.pub_ip.to_string());
+                        let ip = IpQuery::query(&ip);
                         let desc = match &ip {
                             Ok(it) => {it.to_normal_name()}
                             Err(it) => {format!("Error fetching ip: {}", it)}
                         };
-                        let info = format!("Connected to `{}` as {} successfully! Internal IP `{}`. Location: `{}`", self.entered_ip, it.id, it.internal_ip, desc);
+                        let info = format!("Connected to `{}` as {} successfully! Internal IP `{}`. Location: `{}`\nEndpoint: {}", self.entered_ip, it.id, it.internal_ip, desc, it.endpoints[0]);
                         it.description = if let Ok(it) = ip {Some(desc)} else {None};
                         state.known_generators.push(it);
                         state.save();

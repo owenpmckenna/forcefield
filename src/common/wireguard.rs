@@ -1,8 +1,9 @@
+use std::fmt::{Debug, Display, Formatter};
 use std::fs;
 use crate::common::cmd::exec;
 use crate::common::ip::Port;//Port is type alias for u16
 use ipnet::IpNet;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 //remember to use `ip route get 8.8.8.8` for test and `ip rule`
@@ -42,18 +43,15 @@ impl WireguardState {
         WireguardState {routes, wg_interfaces, old_default_route}
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Route {
     pub addresses: Option<IpNet>,
     pub via: Option<IpAddr>,
     pub device: Option<String>,
     pub src: Option<IpAddr>
 }
-impl Route {
-    pub fn new(addresses: Option<IpNet>, via: Option<IpAddr>, device: Option<String>, src: Option<IpAddr>) -> Self {
-        Self { addresses, via, device, src }
-    }
-    fn move_self(&self, cmd: &str) {
+impl Display for Route {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let addr = match &self.addresses {
             None => {"default"}
             Some(it) => {&format!("{}", it)}
@@ -61,7 +59,16 @@ impl Route {
         let via = empty(&self.via, |it| format!(" via {}", it));
         let dev = empty(&self.device, |it| format!(" dev {}", it));
         let src = empty(&self.src, |it| format!(" src {}", it));
-        exec(format!("ip route {} {}{}{}{}", cmd, addr, via, dev, src));
+        write!(f, "{}{}{}{}", addr, via, dev, src)
+    }
+}
+impl Debug for Route { fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { Display::fmt(&self, f) } }
+impl Route {
+    pub fn new(addresses: Option<IpNet>, via: Option<IpAddr>, device: Option<String>, src: Option<IpAddr>) -> Self {
+        Self { addresses, via, device, src }
+    }
+    fn move_self(&self, cmd: &str) {
+        exec(format!("ip route {} {}", cmd, self));
     }
     pub fn add_self(&self) {
         self.move_self("add")
@@ -97,14 +104,44 @@ impl Wireguard {
         exec(format!("wg set {} private-key TMPKEY", self.name));
         fs::remove_file("TMPKEY").unwrap();
         for peer in &self.peers {
-            let addrs = peer.allowed_ips.iter()
-                .map(IpNet::to_string)
-                .collect::<Vec<String>>()
-                .join(",");
-            let endpoint = empty(&peer.endpoint, |(a, p)| format!(" endpoint {}:{}", a, p));
-            exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
+            self.spawn_peer(peer)
         }
         exec(format!("ip link set up dev {}", self.name));
+    }
+    pub fn spawn_peer(&self, peer: &WireguardPeer) {
+        let addrs = peer.allowed_ips.iter()
+            .map(IpNet::to_string)
+            .collect::<Vec<String>>()
+            .join(",");
+        let endpoint = empty(&peer.endpoint, |a| format!(" endpoint {}:{}", a.ip(), a.port()));
+        exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
+    }
+    pub fn spawn_peer_add(&mut self, peer: WireguardPeer) {
+        let addrs = peer.allowed_ips.iter()
+            .map(IpNet::to_string)
+            .collect::<Vec<String>>()
+            .join(",");
+        let endpoint = empty(&peer.endpoint, |a| format!(" endpoint {}:{}", a.ip(), a.port()));
+        exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
+        self.peers.push(peer);
+    }
+    pub fn remove_peer(&mut self, wg_key: &str) -> WireguardPeer {
+        let pos = self.peers.iter().position(|it| it.public_key.eq(wg_key))
+            .expect("could not find peer???");
+        exec(format!("wg set {} peer {} remove", self.name, wg_key));
+        self.peers.remove(pos)
+    }
+    pub fn remove_allowed_ip_from_peer(&mut self, peer: usize, allowed_ip: usize) {
+        let mut peer = self.peers.remove(peer);
+        exec(format!("wg set {} peer {} remove", self.name, peer.public_key));
+        peer.allowed_ips.remove(allowed_ip);
+        self.spawn_peer_add(peer);
+    }
+    pub fn add_allowed_ip_to_peer(&mut self, peer: usize, allowed_ip: IpNet) {
+        let mut peer = self.peers.remove(peer);
+        exec(format!("wg set {} peer {} remove", self.name, peer.public_key));
+        peer.allowed_ips.push(allowed_ip);
+        self.spawn_peer_add(peer);
     }
     pub fn kill(&self) {
         exec(format!("ip link set down dev {}", self.name));
@@ -118,16 +155,17 @@ impl Wireguard {
 pub struct WireguardPeer {
     pub public_key: String,
     pub allowed_ips: Vec<IpNet>,
-    pub endpoint: Option<(IpAddr, Port)>
+    pub endpoint: Option<SocketAddr>
 }
 impl WireguardPeer {
-    pub fn new(public_key: String, allowed_ips: Vec<IpNet>, endpoint: Option<(IpAddr, Port)>) -> Self {
+    pub fn new(public_key: String, allowed_ips: Vec<IpNet>, endpoint: Option<SocketAddr>) -> Self {
         Self { public_key, allowed_ips, endpoint }
     }
 }
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use regex_lite::Regex;
+use serde::{Deserialize, Serialize};
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
@@ -140,19 +178,43 @@ pub fn generate_wireguard_keys() -> (String, String) {
 
     (private_b64, public_b64)
 }
-pub fn get_default_route() -> Route {
+pub fn get_routes() -> Vec<Route> {
     let out = exec("ip route".into());
-    let routes = out.split("\n");
-    let default_route = routes.collect::<Vec<_>>().first().unwrap().trim().to_string();
-    //default via 192.168.0.1 dev wlan0 proto dhcp src 192.168.0.31 metric 1024
-    let via_regex = Regex::new(r"via ([^ ]+)").unwrap();
-    let dev_regex = Regex::new(r"dev ([^ ]+)").unwrap();
-    let src_regex = Regex::new(r"src ([^ ]+)").unwrap();
-    let via = via_regex.captures(&default_route)
-        .map(|it| IpAddr::from_str(&it[1]).unwrap());
-    let dev = dev_regex.captures(&default_route)
-        .map(|it| it[1].to_string());
-    let src = src_regex.captures(&default_route)
-        .map(|it| IpAddr::from_str(&it[1]).unwrap());
-    Route::new(None, via, dev, src)
+    out.split("\n").into_iter().map(|it| it.trim())
+        .filter(|it| !it.is_empty())
+        .map(|it| {
+            //default via 192.168.0.1 dev wlan0 proto dhcp src 192.168.0.31 metric 1024
+            let first = it.split_once(" ").unwrap().0;
+            let mut addr: Option<IpNet> = if first.eq("default") {
+                None
+            } else {
+                if let Ok(it) = first.parse() {
+                    Some(it)
+                } else {Some(IpNet::new_assert(first.parse().unwrap(), 32))}
+            };
+            addr.take_if(|it: &mut IpNet| it.prefix_len() == 0);
+            let via_regex = Regex::new(r"via ([^ ]+)").unwrap();
+            let dev_regex = Regex::new(r"dev ([^ ]+)").unwrap();
+            let src_regex = Regex::new(r"src ([^ ]+)").unwrap();
+            let via = via_regex.captures(&it)
+                .map(|it| IpAddr::from_str(&it[1]).unwrap());
+            let dev = dev_regex.captures(&it)
+                .map(|it| it[1].to_string());
+            let src = src_regex.captures(&it)
+                .map(|it| IpAddr::from_str(&it[1]).unwrap());
+            Route::new(addr, via, dev, src)
+        })
+        .collect::<Vec<Route>>()
+}
+pub fn get_default_route() -> Route {
+    get_routes().remove(0)
+}
+///returns true if the device's route table contains a non-default route for this address
+pub fn has_route_for_ip(ip: IpAddr) -> bool {
+    has_route_for_ip_no_lookup(ip, &get_routes())
+}
+pub fn has_route_for_ip_no_lookup(ip: IpAddr, routes: &Vec<Route>) -> bool {
+    //panic!("looking for ip: {}\nin routes: {:?}", ip, routes);
+    routes.iter().filter_map(|it| it.addresses)
+        .find(|it| it.contains(&ip)).is_some()
 }

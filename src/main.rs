@@ -1,4 +1,6 @@
 #![feature(fn_traits)]
+#![feature(ip)]
+extern crate core;
 
 use crate::citadel::main::citadel_main;
 use crate::generator::main::generator_main;

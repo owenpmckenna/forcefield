@@ -5,3 +5,4 @@ mod dialogue_box;
 mod setup_route;
 mod cursor;
 mod control_connection_screen;
+mod generator_control_screen;

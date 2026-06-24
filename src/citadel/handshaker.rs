@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use crate::citadel::state::BackendState;
 use crate::common::errors::{FFError, FFResult};
 use crate::common::ip::Port;
@@ -8,21 +9,55 @@ use rsa::pkcs8::DecodePrivateKey;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tui::text::Spans;
+use crate::citadel::handshaker::Endpoint::{FromPeer, PublicEndpoint, ViaPeer};
+use crate::common::wireguard::{has_route_for_ip_no_lookup, Route};
 
 static PRIV_KEY_TEXT: &str = include_str!("../../key/private_pkcs1.pem");
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq)]
+pub enum Endpoint {
+    PublicEndpoint(SocketAddr),
+    ///this means that the generator in question (hehe) has connected to the peer with the id in the string
+    ///from behind NAT or something. It can be reached by its internal ip from the network of the peer
+    ViaPeer(String),
+    ///this means the generator can be connected to by the ip, but only when the last hop is from the specified
+    ///endpoint. If it's None, then it can be reached by that IP from us, potentially
+    FromPeer(SocketAddr, Option<String>)
+}
+impl Endpoint {
+    pub fn from_initial_ip(ip: SocketAddr, lg: Option<&Generator>) -> Self {
+        match ip.ip().is_global() {
+            true => {PublicEndpoint(ip)}
+            false => {FromPeer(ip, lg.map(|it| it.id.clone()))}
+        }
+    }
+}
+
+impl Display for Endpoint {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PublicEndpoint(ip) => {write!(f, "{}", ip.ip())}
+            ViaPeer(it) => {write!(f, "via {}", it)}
+            FromPeer(ip, id) => {write!(f, "{} via {}", ip, id.clone().unwrap_or("local network".into()))}
+        }
+    }
+}
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Generator {
     pub id: String,
-    pub pub_ip: IpAddr,
-    pub pub_port: Port,
+    pub endpoints: Vec<Endpoint>,
+    pub wg_port: Port,
+    pub config_port: Port,
     pub internal_ip: IpAddr,
     #[serde(skip, default)]
     config_key: OnceLock<Key>,
     pub config_key_bytes: Vec<u8>,
     pub wg_public_key: String,
-    pub description: Option<String>
+    pub description: Option<String>,
+    #[serde(skip, default)]
+    pub probable_routes: Arc<Mutex<Vec<Route>>>
 }
 impl Generator {
     pub fn get_config_key(&self) -> Key {
@@ -60,15 +95,82 @@ impl Generator {
         write_packet(&mut conn, &nonce.as_slice())?;
         write_packet(&mut conn, &bytes)?;
 
+        let lg = if let Some(id) = state.current_wg_ids.last() {
+            state.get_by_id(id)
+        } else {None};
         Ok(Generator {
             id: str,
-            pub_ip: ip_addr.ip(),
-            pub_port: ip_addr.port(),
+            wg_port: ip_addr.port(),
+            config_port: ip_addr.port() + 1,
             internal_ip: IpAddr::V4(ip),
+            endpoints: vec![Endpoint::from_initial_ip(ip_addr, lg)],
             config_key: OnceLock::new(),
             config_key_bytes: config_key.to_vec(),
             wg_public_key: String::from_utf8(twgc)?,
-            description: None
+            description: None,
+            probable_routes: Arc::new(Mutex::new(vec![]))
         })
+    }
+    ///yeah so... pass in Err(id) if you don't want just a route, but a logical next route in a vpn chain
+    pub fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>) -> Option<&Endpoint> {
+        match connected {
+            //we are connected in a chain, and want to find the best way to talk to this generator
+            Ok(connected) => {
+                self.find_best_endpoint_force_lc(routes, connected, connected.last().map(String::clone))
+            }
+            //We want to know the best way to this generator, from the end of a vpn chain
+            Err(Some(it)) => {
+                self.find_best_endpoint_force_lc(routes, &vec![it.clone()], Some(it))
+            }
+            //we want to know the best way to this generator, from the beginning of a vpn chain
+            Err(None) => {
+                self.find_best_endpoint_force_lc(routes, &vec![], None)
+            }
+        }
+    }
+    fn find_best_endpoint_force_lc(&self, routes: &Vec<Route>, connected: &Vec<String>, last_connected: Option<String>) -> Option<&Endpoint> {
+        //prefer routes direct from peer, they're fastest and simplest
+        if let Some(ep) = self.endpoints.iter()
+            .find_map(|it| if let FromPeer(ip, id) = it {
+                if id.eq(&last_connected) {
+                    if last_connected == None {//if we haven't done any connections yet, check if we're on the right network
+                        if has_route_for_ip_no_lookup(ip.ip(), routes) {
+                            Some(it)
+                        } else {None}
+                    } else {
+                        Some(it)
+                    }
+                } else {None}
+            } else {None}) {
+            return Some(ep);
+        }
+
+        for connected in connected {
+            //ok, so if there's a like, mid level generator in the route with a peer connection to
+            //our target, use it, it'll be faster than the public endpoint
+            if let Some(end) =  self.endpoints.iter().find_map(|it|
+                if let ViaPeer(id) = it && id.eq(connected) {Some(it)} else { None }
+            ) {
+                return Some(end);
+            }
+        }
+
+        if let Some(ep) = self.endpoints.iter().find_map(|it| if let PublicEndpoint(_) = it {Some(it)} else {None}) {
+            return Some(ep);
+        }
+        None
+    }
+    pub fn get_generator_text(&self, endpoint: &Option<&Endpoint>) -> String {
+        let desc = match &self.description {
+            None => {""}
+            Some(it) => {&format!(" - {}", it)}
+        };
+        let conn = if let Some(end) = endpoint {
+            format!(": {}", end)
+        } else {"".into()};
+        format!("{}{}{}", self.id, conn, desc)
+    }
+    pub fn get_best_endpoint(&self) {
+
     }
 }

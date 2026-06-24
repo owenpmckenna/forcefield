@@ -6,6 +6,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+crossbeam-channel = "0.5.15"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_cbor = "0.11.2"
@@ -20,6 +21,8 @@ openport = { version = "0.3.0", features = ["default", "rand"] }
 tui = "0.19"
 crossterm = "0.25"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking"] }
+minreq = { version = "3.0.0", features = ["https-rustls-probe"] }
+icmp-socket = "0.2.0"
 
 [profile.release]
 opt-level = 2

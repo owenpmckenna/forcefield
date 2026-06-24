@@ -2,8 +2,9 @@ use crate::common::setup_handshake::ConfigMessage;
 use crate::generator::init_config::InitialConfig;
 use chacha20poly1305::Key;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 use std::fs;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::OnceLock;
 
 #[derive(Deserialize, Serialize)]
 pub struct Config {
@@ -15,9 +16,12 @@ pub struct Config {
     config_key: OnceLock<Key>,
     pub config_key_bytes: Vec<u8>,
     pub port: u16,
+    pub config_port: u16,
     pub gen_wg_pub: String,
     pub gen_wg_priv: String,
     pub citadel_wg_pub: String,
+    ///the Option<String> is actually an Option<SocketAddr>
+    pub peers: Vec<(String, IpAddr, Option<String>)>
 }
 static FILE: &str = "conf.conf";
 impl Config {
@@ -31,9 +35,11 @@ impl Config {
             config_key: OnceLock::new(),
             config_key_bytes: initial_config.config_key_bytes,
             port: cfg_msg.port,
+            config_port: cfg_msg.config_port,
             gen_wg_pub: initial_config.wg_public,
             gen_wg_priv: initial_config.wg_private,
             citadel_wg_pub: cfg_msg.citadel_wg_pub,
+            peers: vec![]
         }
     }
     pub fn get() -> Option<Self> {
@@ -52,5 +58,13 @@ impl Config {
     }
     fn delete() {
         fs::remove_file(FILE).unwrap();
+    }
+    pub fn get_peers(&self) -> Vec<(String, IpAddr, Option<SocketAddr>)> {
+        self.peers.iter().map(|it| 
+            (it.0.clone(), it.1.clone(), it.2.as_ref().map(|it| it.parse().unwrap()))
+        ).collect()
+    }
+    pub fn add_peer(&mut self, peer: (String, IpAddr, Option<SocketAddr>)) {
+        self.peers.push((peer.0, peer.1, peer.2.map(|it| it.to_string())))
     }
 }

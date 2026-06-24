@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
+use crate::common::wireguard::Wireguard;
 
 #[derive(Deserialize, Serialize)]
 pub struct Config {
@@ -66,5 +67,8 @@ impl Config {
     }
     pub fn add_peer(&mut self, peer: (String, IpAddr, Option<SocketAddr>)) {
         self.peers.push((peer.0, peer.1, peer.2.map(|it| it.to_string())))
+    }
+    pub fn get_citadel_peer_index(&self, wg: &Wireguard) -> usize {
+        wg.peers.iter().position(|it| it.public_key.eq(&self.citadel_wg_pub)).unwrap()
     }
 }

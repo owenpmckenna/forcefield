@@ -116,14 +116,14 @@ impl Wireguard {
         let endpoint = empty(&peer.endpoint, |a| format!(" endpoint {}:{}", a.ip(), a.port()));
         exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
     }
-    pub fn spawn_peer_add(&mut self, peer: WireguardPeer) {
+    pub fn spawn_peer_add(&mut self, peer: WireguardPeer, pos: usize) {
         let addrs = peer.allowed_ips.iter()
             .map(IpNet::to_string)
             .collect::<Vec<String>>()
             .join(",");
         let endpoint = empty(&peer.endpoint, |a| format!(" endpoint {}:{}", a.ip(), a.port()));
         exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
-        self.peers.push(peer);
+        self.peers.insert(pos, peer);
     }
     pub fn remove_peer(&mut self, wg_key: &str) -> WireguardPeer {
         let pos = self.peers.iter().position(|it| it.public_key.eq(wg_key))
@@ -131,17 +131,24 @@ impl Wireguard {
         exec(format!("wg set {} peer {} remove", self.name, wg_key));
         self.peers.remove(pos)
     }
-    pub fn remove_allowed_ip_from_peer(&mut self, peer: usize, allowed_ip: usize) {
-        let mut peer = self.peers.remove(peer);
+    pub fn try_remove_allowed_ip_from_peer(&mut self, peer: usize, allowed_ip: IpNet) {
+        let wgp: &WireguardPeer = &self.peers[peer];
+        let id = wgp.allowed_ips.iter().position(|it| it.eq(&allowed_ip));
+        if let Some(id) = id {
+            self.remove_allowed_ip_from_peer(peer, id);
+        }
+    }
+    pub fn remove_allowed_ip_from_peer(&mut self, peer_i: usize, allowed_ip: usize) {
+        let mut peer = self.peers.remove(peer_i);
         exec(format!("wg set {} peer {} remove", self.name, peer.public_key));
         peer.allowed_ips.remove(allowed_ip);
-        self.spawn_peer_add(peer);
+        self.spawn_peer_add(peer, peer_i);
     }
-    pub fn add_allowed_ip_to_peer(&mut self, peer: usize, allowed_ip: IpNet) {
-        let mut peer = self.peers.remove(peer);
+    pub fn add_allowed_ip_to_peer(&mut self, peer_i: usize, allowed_ip: IpNet) {
+        let mut peer = self.peers.remove(peer_i);
         exec(format!("wg set {} peer {} remove", self.name, peer.public_key));
         peer.allowed_ips.push(allowed_ip);
-        self.spawn_peer_add(peer);
+        self.spawn_peer_add(peer, peer_i);
     }
     pub fn kill(&self) {
         exec(format!("ip link set down dev {}", self.name));

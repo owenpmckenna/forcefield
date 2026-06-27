@@ -6,7 +6,7 @@ use crate::common::setup_handshake::{read_encrypted_data, read_packet, write_enc
 use chacha20poly1305::XChaCha20Poly1305;
 use rand::Rng;
 use std::io::{ErrorKind, Read};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 use crate::common::wireguard::Route;
 
@@ -61,7 +61,7 @@ impl ControlConnection {
         let resp = self.read_encrypted_data()?;
         let hb_resp: Response = serde_json::from_str(&String::from_utf8(resp)?)?;
         match hb_resp {
-            Response::GetIpResponse(it) => {
+            Response::GetIp(it) => {
                 match it {
                     Ok(it) => {Ok(it)}
                     Err(it) => {Err(Box::new(BadGetIp(it)))}
@@ -92,8 +92,8 @@ impl ControlConnection {
             }
         }
     }
-    pub fn order_create_wg(&mut self, peer_wg_pub: &str, peer_internal_ip: IpAddr, endpoint: Option<SocketAddr>) -> FFResult<Vec<Route>> {
-        let cwp0 = Command::CreateWireguardPeer((peer_wg_pub.into(), peer_internal_ip, endpoint));
+    pub fn order_create_wg(&mut self, peer_wg_pub: &str, peer_internal_ipv4: Ipv4Addr, peer_internal_ipv6: Ipv6Addr, endpoint: Option<SocketAddr>) -> FFResult<Vec<Route>> {
+        let cwp0 = Command::CreateWireguardPeer((peer_wg_pub.into(), (peer_internal_ipv4, peer_internal_ipv6), endpoint));
         self.write_read_routes(cwp0)
     }
     pub fn order_delete_wg(&mut self, peer_wg_pub: &str) -> FFResult<Vec<Route>> {
@@ -119,6 +119,21 @@ impl ControlConnection {
         let cwp = serde_json::to_string(&cmd)?;
         self.write_encrypted_data(cwp.as_bytes())?;
         Ok(())
+    }
+    pub fn send_get_ipv6(&mut self) -> FFResult<Option<Ipv6Addr>> {
+        let ip0 = Command::GetIPv6Addr;
+        let ip = serde_json::to_string(&ip0)?;
+        self.write_encrypted_data(ip.as_bytes())?;
+        let resp = self.read_encrypted_data()?;
+        let hb_resp: Response = serde_json::from_str(&String::from_utf8(resp)?)?;
+        match hb_resp {
+            Response::Ipv6Addr(it) => {
+                Ok(it)
+            }
+            _ => {
+                Err(Box::new(WrongResponseType))
+            }
+        }
     }
     pub fn send_shutdown_to(&mut self, address: SocketAddr) -> FFResult<()> {
         let cmd = Command::FireUDPShutdown(address);

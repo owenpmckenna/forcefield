@@ -51,6 +51,7 @@ pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
             }
         }
     }
+    state.save();
 
     terminal.backend_mut().clear()?;
     terminal.backend_mut().write_all("\r\n".as_bytes())?;

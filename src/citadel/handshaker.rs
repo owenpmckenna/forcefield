@@ -8,7 +8,7 @@ use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305};
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tui::text::Spans;
@@ -16,7 +16,7 @@ use crate::citadel::handshaker::Endpoint::{FromPeer, PublicEndpoint, ViaPeer};
 use crate::common::wireguard::{has_route_for_ip_no_lookup, Route};
 
 static PRIV_KEY_TEXT: &str = include_str!("../../key/private_pkcs1.pem");
-#[derive(Serialize, Deserialize, Clone, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub enum Endpoint {
     PublicEndpoint(SocketAddr),
     ///this means that the generator in question (hehe) has connected to the peer with the id in the string
@@ -50,7 +50,8 @@ pub struct Generator {
     pub endpoints: Vec<Endpoint>,
     pub wg_port: Port,
     pub config_port: Port,
-    pub internal_ip: IpAddr,
+    pub internal_ip_v4: Ipv4Addr,
+    pub internal_ip_v6: Ipv6Addr,
     #[serde(skip, default)]
     config_key: OnceLock<Key>,
     pub config_key_bytes: Vec<u8>,
@@ -88,8 +89,8 @@ impl Generator {
         let config_cipher = XChaCha20Poly1305::new(&config_key);
         let nonce = XChaCha20Poly1305::generate_nonce(OsRng);
 
-        let (ip, str) = state.next_id()?;
-        let msg = ConfigMessage::new(str.clone(), ip.to_string(), ip_addr.port(), state.our_wg_pub.clone());
+        let (ipv4, ipv6, str) = state.next_id()?;
+        let msg = ConfigMessage::new(str.clone(), ipv4.to_string(), ipv6.to_string(), ip_addr.port(), state.our_wg_pub.clone());
         let bytes = config_cipher.encrypt(&nonce, serde_json::to_string(&msg)?.as_bytes())
             .map_err(|it| Box::new(FFError::CipherError(it)))?;
         write_packet(&mut conn, &nonce.as_slice())?;
@@ -102,7 +103,8 @@ impl Generator {
             id: str,
             wg_port: ip_addr.port(),
             config_port: ip_addr.port() + 1,
-            internal_ip: IpAddr::V4(ip),
+            internal_ip_v4: ipv4,
+            internal_ip_v6: ipv6,
             endpoints: vec![Endpoint::from_initial_ip(ip_addr, lg)],
             config_key: OnceLock::new(),
             config_key_bytes: config_key.to_vec(),
@@ -112,35 +114,33 @@ impl Generator {
         })
     }
     ///yeah so... pass in Err(id) if you don't want just a route, but a logical next route in a vpn chain
-    pub fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>) -> Option<&Endpoint> {
+    pub fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<&Endpoint> {
         match connected {
             //we are connected in a chain, and want to find the best way to talk to this generator
             Ok(connected) => {
-                self.find_best_endpoint_force_lc(routes, connected, connected.last().map(String::clone))
+                self.find_best_endpoint_force_lc(routes, connected, connected.last().cloned(), pub_ip)
             }
             //We want to know the best way to this generator, from the end of a vpn chain
             Err(Some(it)) => {
-                self.find_best_endpoint_force_lc(routes, &vec![it.clone()], Some(it))
+                self.find_best_endpoint_force_lc(routes, &vec![it.clone()], Some(it), pub_ip)
             }
             //we want to know the best way to this generator, from the beginning of a vpn chain
             Err(None) => {
-                self.find_best_endpoint_force_lc(routes, &vec![], None)
+                self.find_best_endpoint_force_lc(routes, &vec![], None, pub_ip)
             }
         }
     }
-    fn find_best_endpoint_force_lc(&self, routes: &Vec<Route>, connected: &Vec<String>, last_connected: Option<String>) -> Option<&Endpoint> {
+    fn find_best_endpoint_force_lc(&self, routes: &Vec<Route>, connected: &Vec<String>, last_connected: Option<String>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<&Endpoint> {
         //prefer routes direct from peer, they're fastest and simplest
         if let Some(ep) = self.endpoints.iter()
-            .find_map(|it| if let FromPeer(ip, id) = it {
-                if id.eq(&last_connected) {
-                    if last_connected == None {//if we haven't done any connections yet, check if we're on the right network
-                        if has_route_for_ip_no_lookup(ip.ip(), routes) {
-                            Some(it)
-                        } else {None}
-                    } else {
+            .find_map(|it| if let FromPeer(ip, id) = it && id.eq(&last_connected) {
+                if last_connected == None {//if we haven't done any connections yet, check if we're on the right network
+                    if has_route_for_ip_no_lookup(ip.ip(), routes) {
                         Some(it)
-                    }
-                } else {None}
+                    } else {None}
+                } else {
+                    Some(it)
+                }
             } else {None}) {
             return Some(ep);
         }
@@ -155,8 +155,23 @@ impl Generator {
             }
         }
 
-        if let Some(ep) = self.endpoints.iter().find_map(|it| if let PublicEndpoint(_) = it {Some(it)} else {None}) {
-            return Some(ep);
+        if let Some((ep, _)) = self.endpoints.iter()
+            .filter_map(|it| if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None})
+            .find(|it| it.1.is_ipv4()){
+            if let Some(pub_ip) = pub_ip {
+                if pub_ip.1.is_some() {
+                    return Some(ep)
+                }
+            } else {return Some(ep)}
+        }
+        if let Some((ep, _)) = self.endpoints.iter()
+            .filter_map(|it| {if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None}})
+            .find(|it| {it.1.is_ipv6()}) {
+            if let Some(pub_ip) = pub_ip {
+                if pub_ip.0.is_some() {
+                    return Some(ep)
+                }
+            } else {return Some(ep)}
         }
         None
     }

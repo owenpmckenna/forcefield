@@ -1,5 +1,5 @@
 use std::io::Stdout;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use crossterm::event::{KeyCode, KeyEvent};
 use crossterm::event::KeyCode::Up;
 use tui::backend::CrosstermBackend;
@@ -37,7 +37,7 @@ impl ControlConnectionScreen {
         }
     }
     fn is_device_available(state: &BackendState, generator: &Generator) -> Option<SocketAddr> {
-        let ip = generator.internal_ip;
+        let ip = generator.internal_ip_v4.into();
         let address = SocketAddr::new(ip, generator.config_port);
         if let Some(it) = &state.current_wg_setup {
             for route in &it.routes {
@@ -74,7 +74,7 @@ impl RenderWidget for ControlConnectionScreen {
                 Style::default().fg(Color::Blue)
             } else {Style::default().fg(Color::Gray)};
             let desc = ge.description.clone().map(|it| format!(" - {}", it)).unwrap_or("".to_string());
-            ListItem::new(Text::styled(format!("{}: {}{}", ge.id, ge.internal_ip, desc), style))
+            ListItem::new(Text::styled(format!("{}: {}{}", ge.id, ge.internal_ip_v4, desc), style))
         }).collect();
         let generators = List::new(items)
             .style(Style::default().fg(Color::White))
@@ -130,12 +130,13 @@ impl RenderWidget for ControlConnectionScreen {
                     //    return AddScreen(Box::new(DialogueBox::new("Error", "No devices directly connected by Wireguard")))
                     //}
                     let ge = &state.known_generators[/*available_device_indexes[*/self.preroute_selected/*]*/];
-                    SocketAddr::new(ge.internal_ip, ge.config_port)
+                    SocketAddr::new(IpAddr::V4(ge.internal_ip_v4), ge.config_port)
                 } else {
                     if let Ok(it) = self.direct_addr.parse() {
                         let end = Endpoint::from_initial_ip(it, state.known_generators.last());
                         let gene: &mut Generator = &mut state.known_generators[self.preroute_selected];
                         gene.endpoints.push(end);
+                        self.direct_addr.clear();
                         it
                     } else {
                         return AddScreen(Box::new(DialogueBox::new("Error", "Invalid Ip/Port Entered")))
@@ -145,7 +146,7 @@ impl RenderWidget for ControlConnectionScreen {
                     let ge = &state.known_generators[self.preroute_selected];
                     return AddScreen(Box::new(GeneratorControlScreen::new(ge.id.clone(), None, state)))
                 }
-                match ControlConnection::connect(addr.clone(), &state) {
+                match ControlConnection::connect(addr, state) {
                     Ok(it) => {
                         AddScreen(Box::new(GeneratorControlScreen::new(it.server_id.clone(), Some(it), state)))
                     }

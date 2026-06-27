@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use std::cmp::PartialEq;
 use std::env::args;
 use std::io::Stdout;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
@@ -138,9 +138,9 @@ impl GeneratorControlScreen {
         let us = self.get_gen(state);
         let next = state.get_by_id(&self.peer_via_endpoint.as_ref().unwrap().0).unwrap();
         let us_conn = self.connection.as_mut().unwrap();
-        let mut next_conn = ControlConnection::connect((next.internal_ip, next.config_port).into(), state)?;
-        let n_routes = next_conn.order_create_wg(&us.wg_public_key, us.internal_ip, None)?;
-        let u_routes = us_conn.order_create_wg(&next.wg_public_key, next.internal_ip, Some(peer_via_endpoint))?;
+        let mut next_conn = ControlConnection::connect((IpAddr::V4(next.internal_ip_v4), next.config_port).into(), state)?;
+        let n_routes = next_conn.order_create_wg(&us.wg_public_key, us.internal_ip_v4, us.internal_ip_v6, None)?;
+        let u_routes = us_conn.order_create_wg(&next.wg_public_key, next.internal_ip_v4, next.internal_ip_v6, Some(peer_via_endpoint))?;
         let next = next.id.clone();//yeah lifetime name shadowing shut up
         let us = self.get_gen_mut(state);
         us.endpoints.push(Endpoint::ViaPeer(next.clone()));
@@ -152,7 +152,7 @@ impl GeneratorControlScreen {
         let us = self.get_gen(state);
         let next = state.get_by_id(endpoint_peer).unwrap();
         let us_conn = self.connection.as_mut().unwrap();
-        let mut next_conn = ControlConnection::connect((next.internal_ip, next.config_port).into(), state)?;
+        let mut next_conn = ControlConnection::connect((next.internal_ip_v4, next.config_port).into(), state)?;
         let n_routes = next_conn.order_delete_wg(&us.wg_public_key)?;
         let u_routes = us_conn.order_delete_wg(&next.wg_public_key)?;
         let n_routes = n_routes.into_iter().map(|it| it.to_string()).collect::<Vec<_>>().join("\n");
@@ -263,7 +263,7 @@ impl RenderWidget for GeneratorControlScreen {
         if !do_controls {
             return;
         }
-        let control_list = vec!["Heartbeat", "Get Ip", "Get Routes", "Kill"]
+        let control_list = vec!["Heartbeat", "Get Ip", "Get Routes", "Get Ipv6 Address", "Kill"]
             .into_iter()
             .map(|it| ListItem::new(it))
             .collect::<Vec<_>>();
@@ -363,6 +363,16 @@ impl RenderWidget for GeneratorControlScreen {
                                     let mgen = self.get_gen_mut(state);
                                     let str = it.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
                                     *mgen.probable_routes.lock().unwrap() = it;
+                                    Ok(str)
+                                }
+                                Err(it) => {Err(it)}
+                            }
+                        } else if self.command_selected == 3 {
+                            match connection.send_get_ipv6() {
+                                Ok(it) => {
+                                    let str = if let Some(it) = it {
+                                        format!("Ipv6 address found: {}", it)
+                                    } else {"No Ipv6 Address Found".to_string()};
                                     Ok(str)
                                 }
                                 Err(it) => {Err(it)}

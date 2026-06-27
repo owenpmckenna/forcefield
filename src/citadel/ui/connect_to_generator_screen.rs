@@ -82,7 +82,7 @@ impl RenderWidget for ConnectToGeneratorScreen {
                             Ok(it) => {it.to_normal_name()}
                             Err(it) => {format!("Error fetching ip: {}", it)}
                         };
-                        let info = format!("Connected to `{}` as {} successfully! Internal IP `{}`. Location: `{}`\nEndpoint: {}", self.entered_ip, it.id, it.internal_ip, desc, it.endpoints[0]);
+                        let info = format!("Connected to `{}` as {} successfully! Internal IP `{}`. Location: `{}`\nEndpoint: {}", self.entered_ip, it.id, it.internal_ip_v4, desc, it.endpoints[0]);
                         it.description = if let Ok(it) = ip {Some(desc)} else {None};
                         state.known_generators.push(it);
                         state.save();

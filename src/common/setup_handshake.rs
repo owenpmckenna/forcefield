@@ -1,25 +1,27 @@
+use crate::common::errors::FFError::CipherError;
 use crate::common::errors::FFResult;
+use chacha20poly1305::aead::{Aead, OsRng};
+use chacha20poly1305::{AeadCore, XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use chacha20poly1305::aead::{Aead, OsRng};
-use chacha20poly1305::{AeadCore, XChaCha20Poly1305, XNonce};
-use crate::common::errors::FFError::CipherError;
 
 #[derive(Serialize, Deserialize)]
 pub struct ConfigMessage {
     pub server_id: String,
-    pub server_ip: String,
+    pub server_ipv4: String,
+    pub server_ipv6: String,
     pub port: u16,
     pub config_port: u16,
     pub citadel_wg_pub: String,
 }
 impl ConfigMessage {
-    pub fn new(server_id: String, server_ip: String, port: u16, citadel_wg_pub: String) -> ConfigMessage {
+    pub fn new(server_id: String, server_ipv4: String, server_ipv6: String, port: u16, citadel_wg_pub: String) -> ConfigMessage {
         ConfigMessage {
             server_id,
-            server_ip,
+            server_ipv4,
+            server_ipv6,
             port,
             config_port: port + 1,
             citadel_wg_pub,

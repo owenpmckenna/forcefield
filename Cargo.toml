@@ -20,9 +20,10 @@ ipnet = { version = "2.12.0", features = ["default", "serde"] }
 openport = { version = "0.3.0", features = ["default", "rand"] }
 tui = "0.19"
 crossterm = "0.25"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
 minreq = { version = "3.0.0", features = ["https-rustls-probe"] }
 icmp-socket = "0.2.0"
+#wstunnel = { git = "https://github.com/erebe/wstunnel" }
 
 [profile.release]
 opt-level = 2

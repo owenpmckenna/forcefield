@@ -12,7 +12,8 @@ pub enum FFError {
     WrongHeartbeat,
     BadGetIp(String),
     GenShutdownWrong(String),
-    ICMPPacketError(IcmpPacketBuildError)
+    ICMPPacketError(IcmpPacketBuildError),
+    NoRealInternetConnection
 }
 
 impl Display for FFError {

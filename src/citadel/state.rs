@@ -1,16 +1,16 @@
+use crate::citadel::control_connection::ControlConnection;
 use crate::citadel::handshaker::{Endpoint, Generator};
 use crate::common::cmd::exec;
 use crate::common::errors::{FFError, FFResult};
-use crate::common::wireguard::{generate_wireguard_keys, get_default_route, Route, Wireguard, WireguardPeer, WireguardState};
-use ipnet::{IpNet, Ipv4Net, PrefixLenError};
+use crate::common::wireguard::{generate_wireguard_keys, get_default_route_v4, get_default_route_v6, get_routes, Route, Wireguard, WireguardPeer, WireguardState};
+use ipnet::{IpNet, Ipv6Net};
 use openport::pick_random_unused_port;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
-use std::fs;
-use crate::citadel::control_connection::ControlConnection;
+use std::{default, fs};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BackendState {
@@ -53,7 +53,10 @@ impl BackendState {
         fs::remove_file(FILE).unwrap();
     }
 
-    pub fn next_id(&self) -> FFResult<(Ipv4Addr, String)> {
+    pub fn next_id(&self) -> FFResult<(Ipv4Addr, Ipv6Addr, String)> {
+        let ipv6_range: Ipv6Net = "fd80:51e8:5d8e::/48".parse().unwrap();
+        //skips ::0 and ::1
+        let ipv6 = ipv6_range.hosts().skip(self.known_generators.len() + 2).next().unwrap();
         let offset = (self.known_generators.len() + 2) as u32;
         let id = (0..8).map(|_| rand::rng().sample(Alphanumeric) as char).collect();
         let mut ip: Ipv4Addr = "10.69.0.0".parse()?;
@@ -63,19 +66,24 @@ impl BackendState {
             let mut bits = ip.octets();
             bits[3] += offset as u8;
             ip = Ipv4Addr::from_octets(bits);
-            Ok((ip, id))
+            Ok((ip, ipv6, id))
         }
     }
-    fn is_everything(addresses: &IpNet) -> bool {
-        addresses.prefix_len() == 0
+    fn is_everything(addresses: &[IpNet]) -> bool {
+        for address in addresses {
+            if address.prefix_len() == 0 {
+                return true
+            }
+        }
+        false
     }
-    fn is_everything_opt(addresses: &Option<IpNet>) -> bool {
+    /*fn is_everything_opt(addresses: &Option<IpNet>) -> bool {
         if let Some(it) = addresses {
             Self::is_everything(it)
         } else {true}
-    }
+    }*/
     fn force_get_internal_ip(&self, id: &str) -> SocketAddr {
-        self.get_by_id(id).map(|it| (it.internal_ip, it.config_port)).unwrap().into()
+        self.get_by_id(id).map(|it| (it.internal_ip_v4, it.config_port)).unwrap().into()
     }
     fn send_wakeups(&mut self) -> FFResult<()> {
         for (index, id) in self.current_wg_ids.iter().enumerate() {
@@ -83,7 +91,7 @@ impl BackendState {
                 self.force_get_internal_ip(it)
             } else {continue;};
             let ge = self.get_by_id(id).unwrap();
-            let mut conn = ControlConnection::connect((ge.internal_ip, ge.config_port).into(), self)?;
+            let mut conn = ControlConnection::connect((ge.internal_ip_v4, ge.config_port).into(), self)?;
             conn.send_wakeup_to(next_ip)?;
             conn.send_heartbeat()?;
         }
@@ -96,7 +104,7 @@ impl BackendState {
                 self.force_get_internal_ip(it)
             } else {continue;};
             let ge = self.get_by_id(id).unwrap();
-            let conn = ControlConnection::connect((ge.internal_ip, ge.config_port).into(), self);
+            let conn = ControlConnection::connect((ge.internal_ip_v4, ge.config_port).into(), self);
             if let Ok(mut conn) = conn {
                 let _ = conn.send_shutdown_to(next_ip);
             } else {
@@ -107,7 +115,7 @@ impl BackendState {
     }
     ///list is a list, in order, of which servers to use. it's indexes of (known_generators, connection mode)
     pub fn create_wg_setup(&mut self, list: Vec<(usize, Endpoint)>, addresses: String) -> FFResult<()> {
-        let addresses = IpNet::from_str(&addresses)?;
+        let addresses: Vec<IpNet> = addresses.split(",").map(IpNet::from_str).map(Result::unwrap).collect();
         self.send_shutdowns();
         if let Some(setup) = self.current_wg_setup.take() {
             setup.down();
@@ -125,11 +133,14 @@ impl BackendState {
             .map(|(id, (it, end))| {
                 let mut allowed_ip = vec![];
                 //if last, tell wireguard that's the one we actually want to use. just route is not enough
-                if id == list.len() - 1 {allowed_ip.push("0.0.0.0/0".parse().unwrap())}
+                if id == list.len() - 1 {
+                    allowed_ip.push("0.0.0.0/0".parse().unwrap());
+                    allowed_ip.push("::/0".parse().unwrap());
+                }
                 let end = match end {
                     Endpoint::PublicEndpoint(it) => {it}
                     Endpoint::ViaPeer(_) => {//don't need to know this peer's id, it'll be the last one we did
-                        &SocketAddr::new(it.internal_ip, it.wg_port)
+                        &SocketAddr::new(it.internal_ip_v4.into(), it.wg_port)
                     },
                     Endpoint::FromPeer(it, _) => {it}
                 };
@@ -143,40 +154,79 @@ impl BackendState {
         for i in 0..(list.len()-1) {
             //well, this won't work if there's no endpoint...
             let endpoint = peers[i+1].endpoint.unwrap().ip().into();
-            let internal_ip = self.known_generators[list[i].0].internal_ip.into();
+            let internal_ipv4 = self.known_generators[list[i].0].internal_ip_v4.into();
+            let internal_ipv6 = self.known_generators[list[i].0].internal_ip_v6.into();
             peers[i].allowed_ips.push(endpoint);
-            peers[i].allowed_ips.push(internal_ip);
+            peers[i].allowed_ips.push(IpNet::V4(internal_ipv4));
+            peers[i].allowed_ips.push(IpNet::V6(internal_ipv6));
         }
-        let wireguard = Wireguard::new(pick_random_unused_port().unwrap(), self.our_wg_priv.clone(), self.our_wg_pub.clone(), "uwu0".to_string(), IpAddr::from_str("10.69.0.1").unwrap(), peers);
+        let wireguard = Wireguard::new(pick_random_unused_port().unwrap(), self.our_wg_priv.clone(),
+                                       self.our_wg_pub.clone(), "uwu0".to_string(), Ipv4Addr::from_str("10.69.0.1").unwrap(),
+                                       Ipv6Addr::from_str("fd80:51e8:5d8e::1").unwrap(), peers);
         let peers = &wireguard.peers;
-        let default = get_default_route();
-        if Self::is_everything(&addresses) {
-            default.remove_self();
+        let routes = get_routes();
+        let mut default = None;
+        let default_v4 = get_default_route_v4(&routes).cloned();
+        let default_v6 = get_default_route_v6(&routes).cloned();
+        if let Some(v6) = default_v6.clone() && Self::is_everything(&[v6.addresses]) {
+            v6.remove_self();
+            default = Some(v6);
         }
+        if let Some(v4) = default_v4.clone() && Self::is_everything(&[v4.addresses]) {
+            v4.remove_self();
+            default = Some(v4);
+        }
+        let default = default.ok_or(FFError::NoRealInternetConnection)?;
         //add first route, route to first generator over *normal network*
         routes_to_add.push(Route::new(
-            simple_peer_to_cidr(peers.first().unwrap()),
+            //this has to be unwrapped because we need the first peer to have a routable endpoint
+            simple_peer_to_cidr(peers.first().unwrap()).unwrap(),
             default.via,
             default.device.clone(),
             default.src
         ));
         for id in 1..list.len() {
             //create each route, routing only the endpoint for the new wg device via the last one
-            routes_to_add.push(Route::new(
-                simple_peer_to_cidr(&peers[id]),
-                Some(generators[id - 1].internal_ip),//via: grab the last device's internal ip
-                Some("uwu0".to_string()),
-                Some("10.69.0.1".parse()?)
-            ));
+            let end = simple_peer_to_cidr(&peers[id]).unwrap();
+            if let IpNet::V6(_) = end {
+                routes_to_add.push(Route::new(
+                    end,
+                    Some(IpAddr::V6(generators[id - 1].internal_ip_v6)), //via: grab the last device's internal ip
+                    Some("uwu0".to_string()),
+                    Some("fd80:51e8:5d8e::1".parse()?)
+                ));
+            } else {
+                routes_to_add.push(Route::new(
+                    end,
+                    Some(IpAddr::V4(generators[id - 1].internal_ip_v4)), //via: grab the last device's internal ip
+                    Some("uwu0".to_string()),
+                    Some("10.69.0.1".parse()?)
+                ));
+            }
         }
         let l_id = list.len() - 1;
         //wireguard now knows how to reach each wireguard server, now add the default route to go to the last one.
-        routes_to_add.push(Route::new(
-            Some(addresses),
-            Some(generators[l_id].internal_ip),
-            Some("uwu0".to_string()),
-            Some("10.69.0.1".parse()?)
-        ));
+        for address in addresses {
+            if let IpNet::V4(_) = address {
+                routes_to_add.push(Route::new_full(
+                    address,
+                    Some(IpAddr::V4(generators[l_id].internal_ip_v4)),
+                    Some("uwu0".to_string()),
+                    Some("10.69.0.1".parse()?),
+                    None,
+                    Some(50)
+                ));
+            } else {
+                routes_to_add.push(Route::new_full(
+                    address,
+                    Some(IpAddr::V6(generators[l_id].internal_ip_v6)),
+                    Some("uwu0".to_string()),
+                    Some("fd80:51e8:5d8e::1".parse()?),
+                    None,
+                    Some(50)
+                ));
+            }
+        }
         wireguard.spawn();
         for i in &routes_to_add {
             i.add_self();
@@ -186,7 +236,7 @@ impl BackendState {
         let ipv6s = peers.iter().filter(|it| it.endpoint.is_some())
             .filter(|it| it.endpoint.unwrap().ip().is_ipv6()).count();
         exec(format!("ip link set uwu0 mtu {}", 1500 - 60 * ipv4s - 80 * ipv6s));
-        self.current_wg_setup = Some(WireguardState::new(routes_to_add, vec![wireguard], default));
+        self.current_wg_setup = Some(WireguardState::new(routes_to_add, vec![wireguard], default_v4, default_v6));
         self.current_wg_ids = list.iter().map(|(it, _)| self.known_generators[*it].id.clone()).collect();
         self.endpoints_used = list.into_iter().map(|(_, it)| it).collect();
         self.send_wakeups()?;

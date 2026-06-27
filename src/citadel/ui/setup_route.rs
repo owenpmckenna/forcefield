@@ -6,6 +6,7 @@ use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
 use crate::common::cmd::exec;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::io::{Stdout};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use tui::backend::CrosstermBackend;
 use tui::layout::{Alignment, Constraint, Direction, Layout};
 use tui::style::{Color, Style};
@@ -14,6 +15,7 @@ use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragr
 use tui::Frame;
 use crate::citadel::handshaker::Endpoint;
 use crate::citadel::ui::cursor::Cursor;
+use crate::common::ip::get_routable_address;
 use crate::common::wireguard::{get_routes, Route};
 
 pub struct RouteSetupScreen {
@@ -23,7 +25,8 @@ pub struct RouteSetupScreen {
     settings_current: usize,
     target_address: String,
     target_addr_cursor: Cursor<RouteSetupScreen>,
-    routes: Vec<Route>
+    routes: Vec<Route>,
+    pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>
 }
 #[derive(Eq, PartialEq)]
 enum Mode {
@@ -37,7 +40,8 @@ impl RouteSetupScreen {
         ).collect();
         let target_addr_cursor = Cursor::new(|it: &RouteSetupScreen| it.mode == Mode::Settings && it.settings_current == 0);
         let routes = get_routes();
-        let mut se = Self { current: 0, current_selected, mode: Mode::RoutePicker, settings_current: 0, target_address: "0.0.0.0/0".to_string(), target_addr_cursor, routes };
+        let pub_ip = if current_selected.is_empty() {Some(get_routable_address())} else {None};
+        let mut se = Self { current: 0, current_selected, mode: Mode::RoutePicker, settings_current: 0, target_address: "0.0.0.0/0,::/0".to_string(), target_addr_cursor, routes, pub_ip };
         se.current = if let Some((id, _)) = se.current_selected.last() {
             *id
         } else {*se.get_allowed_ids(state).get(0).unwrap_or(&0)};
@@ -57,29 +61,34 @@ impl RouteSetupScreen {
                 continue;
             }
             let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
-            let available_routes = last_id.as_ref().map(|it| state.get_by_id(&it)).flatten()
-                .map(|it| it.probable_routes.lock().ok()).flatten();
-            if state.known_generators[i].find_best_endpoint(&self.routes, Err(last_id)).is_none() {
+            //let available_routes = last_id.as_ref().map(|it| state.get_by_id(&it)).flatten()
+            //    .map(|it| it.probable_routes.lock().ok()).flatten();
+            if state.known_generators[i].find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info()).is_none() {
                 continue;
             }
             data.push(i);
         }
         data
     }
+    fn useful_ip_info(&self) -> Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)> {
+        if let Some(pub_ip) = self.pub_ip && self.current_selected.is_empty() {
+            Some(pub_ip)
+        } else {None}
+    }
     fn alternate_selected(&mut self, state: &BackendState) {
         if let Some(ind) = self.is_selected(self.current) {
             self.current_selected.remove(ind);
         } else {
             let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
-            let best = state.known_generators[self.current].find_best_endpoint(&self.routes, Err(last_id));
+            let best = state.known_generators[self.current].find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info());
             self.current_selected.push((self.current, best.unwrap().clone()));
         }
     }
     fn is_selected(&self, index: usize) -> Option<usize> {
         self.current_selected.iter().position(|(i, _)| *i == index)
     }
-    fn selected_style(&self, index: usize, has_route: bool) -> Style {
-        if self.is_selected(index).is_some() {
+    fn selected_style(&self, pos: Option<usize>, has_route: bool) -> Style {
+        if let Some(_) = pos {
             Style::default().fg(Color::Blue)
         } else if has_route {
             Style::default().fg(Color::White)
@@ -89,8 +98,12 @@ impl RouteSetupScreen {
     }
     fn selected_text(&self, state: &mut BackendState, index: usize) -> Text {
         let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
-        let best = state.known_generators[index].find_best_endpoint(&self.routes, Err(last_id));
-        let style = self.selected_style(index, best.is_some());
+        let pos = self.is_selected(index);
+        let useful_ip_info = if let Some(it) = self.pub_ip && (pos.eq(&Some(0)) || pos.eq(&None)) {
+            Some(it)
+        } else {None};
+        let best = state.known_generators[index].find_best_endpoint(&self.routes, Err(last_id), useful_ip_info);
+        let style = self.selected_style(pos, best.is_some());
         let it = &state.known_generators[index];
         Text::styled(it.get_generator_text(&best), style)
     }

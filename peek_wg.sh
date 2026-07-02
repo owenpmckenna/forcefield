@@ -1,0 +1,8 @@
+echo "------CITADEL------"
+docker exec -it citadel sh -c "wg show"
+echo "-------GEN 1-------"
+docker exec -it gen_1 sh -c "wg show"
+echo "-------GEN 2-------"
+docker exec -it gen_2 sh -c "wg show"
+echo "-------GEN 3-------"
+docker exec -it gen_3 sh -c "wg show"

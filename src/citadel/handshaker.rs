@@ -156,19 +156,19 @@ impl Generator {
         }
 
         if let Some((ep, _)) = self.endpoints.iter()
-            .filter_map(|it| if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None})
-            .find(|it| it.1.is_ipv4()){
+            .filter_map(|it| {if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None}})
+            .find(|it| {it.1.is_ipv6()}) {
             if let Some(pub_ip) = pub_ip {
-                if pub_ip.1.is_some() {
+                if pub_ip.0.is_some() {
                     return Some(ep)
                 }
             } else {return Some(ep)}
         }
         if let Some((ep, _)) = self.endpoints.iter()
-            .filter_map(|it| {if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None}})
-            .find(|it| {it.1.is_ipv6()}) {
+            .filter_map(|it| if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None})
+            .find(|it| it.1.is_ipv4()){
             if let Some(pub_ip) = pub_ip {
-                if pub_ip.0.is_some() {
+                if pub_ip.1.is_some() {
                     return Some(ep)
                 }
             } else {return Some(ep)}

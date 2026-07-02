@@ -1,0 +1,12 @@
+Instructions:
+On the left is the Forcefield terminal, it will allow you to configure your vpn
+Closing the terminal (exiting it) will shutdown the vpn, so don't do that
+For testing purposes, everything here is inside a docker container
+The Forcefield terminal is inside one at 192.168.2.2
+Three other servers have been spun up at 192.168.2.3, .4, and .5
+The first thing you should do is connect to the servers. They are all running at port 8080. (Eg. go to the "connect to generator" screen and type in 192.168.2.3:8080)
+You can do this in any order. Note that you may want to set your wireguard path to run through a generator before you connect to the next one.
+Once you connect to a generator for the first time via TCP, a handshake occurs, keys are transferred, and the generator resets exposing only a wireguard port publicly.
+You can then connect to it and proxy all data (including new connections) by going to Set Wireguard Path and selecting it.
+The Set Wireguard Path screen allows you to put the servers in order.
+Check the README for more instructions, use "./peek_ip_routes.sh" to view the routes on each machine, "./peek_wg.sh" to view wireguard configs, "./test_connection.sh" uses curl to test access, and "./peek_generators.sh" to view generator logs.

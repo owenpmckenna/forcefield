@@ -3,6 +3,7 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "overrideCommand": false,
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false

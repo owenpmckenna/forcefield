@@ -1,4 +1,5 @@
 #![feature(fn_traits)]
+#![feature(trait_alias)]
 #![feature(ip)]
 extern crate core;
 

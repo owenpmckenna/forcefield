@@ -1,23 +1,22 @@
+use crate::citadel::control_connection::ControlConnection;
+use crate::citadel::handshaker::{Endpoint, Generator};
+use crate::citadel::state::BackendState;
+use crate::citadel::ui::dialogue_box::DialogueBox;
+use crate::citadel::ui::generator_control_screen_2::GeneratorControlScreen2;
+use crate::citadel::ui::ui_main::KeyResult::{AddScreen, Exited, Handled, Passup};
+use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
+use crate::citadel::ui_utils::cursor::Cursor;
+use crate::common::wireguard::{Route, get_routes};
+use crossterm::event::KeyCode::Up;
+use crossterm::event::{KeyCode, KeyEvent};
 use std::io::Stdout;
 use std::net::{IpAddr, SocketAddr};
-use crossterm::event::{KeyCode, KeyEvent};
-use crossterm::event::KeyCode::Up;
-use tui::backend::CrosstermBackend;
 use tui::Frame;
+use tui::backend::CrosstermBackend;
 use tui::layout::{Constraint, Direction, Layout};
 use tui::style::{Color, Style};
 use tui::text::{Span, Spans, Text};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
-use crate::citadel::control_connection::ControlConnection;
-use crate::citadel::handshaker::{Endpoint, Generator};
-use crate::citadel::state::BackendState;
-use crate::citadel::ui::cursor::Cursor;
-use crate::citadel::ui::dialogue_box::DialogueBox;
-use crate::citadel::ui::generator_control_screen::GeneratorControlScreen;
-use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
-use crate::citadel::ui::ui_main::KeyResult::{AddScreen, Exited, Handled, Passup};
-use crate::common::errors::FFResult;
-use crate::common::wireguard::{get_routes, Route};
 
 pub struct ControlConnectionScreen {
     is_on_preroutes: bool,
@@ -73,7 +72,7 @@ impl RenderWidget for ControlConnectionScreen {
             let style = if let Some(it) = Self::is_device_available(state, ge) {
                 Style::default().fg(Color::Blue)
             } else {Style::default().fg(Color::Gray)};
-            let desc = ge.description.clone().map(|it| format!(" - {}", it)).unwrap_or("".to_string());
+            let desc = format!(" - {}", ge.description);
             ListItem::new(Text::styled(format!("{}: {}{}", ge.id, ge.internal_ip_v4, desc), style))
         }).collect();
         let generators = List::new(items)
@@ -144,11 +143,11 @@ impl RenderWidget for ControlConnectionScreen {
                 };
                 if !Self::get_available_device_indexes(state).contains(&self.preroute_selected) && self.is_on_preroutes {
                     let ge = &state.known_generators[self.preroute_selected];
-                    return AddScreen(Box::new(GeneratorControlScreen::new(ge.id.clone(), None, state)))
+                    return AddScreen(Box::new(GeneratorControlScreen2::new(ge.id.clone(), None, state)))
                 }
                 match ControlConnection::connect(addr, state) {
                     Ok(it) => {
-                        AddScreen(Box::new(GeneratorControlScreen::new(it.server_id.clone(), Some(it), state)))
+                        AddScreen(Box::new(GeneratorControlScreen2::new(it.server_id.clone(), Some(it), state)))
                     }
                     Err(it) => {
                         AddScreen(Box::new(DialogueBox::new("Error", &format!("could not connect to device - `{}`", it))))

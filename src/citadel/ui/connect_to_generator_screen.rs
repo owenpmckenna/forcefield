@@ -1,105 +1,68 @@
+use crate::bvec;
 use crate::citadel::handshaker::Generator;
 use crate::citadel::state::BackendState;
 use crate::citadel::ui::dialogue_box::DialogueBox;
-use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
+use crate::citadel::ui::ui_main::{KeyResult, RenderWidget, add_screen, get_from_queue, replace_screen};
+use crate::citadel::ui_utils::screen::{ButtonElement, Element, Pane, Screen, TextInputElement};
 use crate::common::ip::IpQuery;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 use std::io::Stdout;
-use tui::backend::CrosstermBackend;
-use tui::layout::{Alignment, Constraint, Direction, Layout};
-use tui::style::{Color, Style};
-use tui::text::{Span, Spans};
-use tui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tui::Frame;
-use crate::citadel::ui::cursor::Cursor;
+use tui::backend::CrosstermBackend;
 
 pub struct ConnectToGeneratorScreen {
     entered_ip: String,
-    cursor: Cursor<ConnectToGeneratorScreen>
+    screen: Option<Screen<Self>>,
 }
 impl ConnectToGeneratorScreen {
+    fn connect(&self, state: &mut BackendState) {
+        let ip = self.entered_ip.clone();
+        match Generator::connect_to_generator(ip.clone(), state) {
+            Ok(mut it) => {
+                let ip = IpQuery::query(&ip);
+                let desc = match &ip {
+                    Ok(it) => {it.to_normal_name()}
+                    Err(it) => {format!("Error fetching ip: {}", it)}
+                };
+                let info = format!("Connected to `{}` as {} successfully! Internal IP `{}`. Location: `{}`\nEndpoint: {}", self.entered_ip, it.id, it.internal_ip_v4, desc, it.endpoints[0]);
+                it.description = if let Ok(it) = ip {desc} else {"".to_string()};
+                state.known_generators.push(it);
+                state.save();
+                replace_screen(DialogueBox::new("Connection success", &info));
+            }
+            Err(it) => {
+                let error = format!("failed connecting to server `{}`. Error: {}", self.entered_ip, it);
+                add_screen(DialogueBox::new("Connection failed", &error))
+            }
+        }
+
+    }
     pub fn new() -> ConnectToGeneratorScreen {
-        ConnectToGeneratorScreen { entered_ip: "".to_string(), cursor: Cursor::new(|_| true) }
+        let buttons: Vec<Box<dyn Element<Self>>> = bvec![
+            TextInputElement::new("", |it: &mut Self,_b:_| &mut it.entered_ip, |it,_b:_| &it.entered_ip),
+            ButtonElement::new_("Connect", true, |_, ctg: &mut Self, z| ctg.connect(z))
+        ];
+        let mut pane = Pane::new("Connect To Generator", buttons);
+        pane.enter_redirectors.push((0, 1));
+        pane.allow_updown = false;
+        let screen: Screen<Self> = Screen::new(vec![pane]).unwrap();
+        ConnectToGeneratorScreen { entered_ip: "".to_string(), screen: Some(screen) }
     }
 }
+
 impl RenderWidget for ConnectToGeneratorScreen {
-    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, _: &mut BackendState) {
+    fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState) {
         let size = rect.size();
-        let surround = Block::default()
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::White))
-            .title("Connect To Generator")
-            .border_type(BorderType::Plain);
-        let inner_size = surround.inner(size);
-        rect.render_widget(surround, size);
-
-        let vertical_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(0)
-            .constraints(
-                [
-                    Constraint::Min(1),
-                    Constraint::Min(1)
-                ]
-                    .as_ref(),
-            )
-            .split(inner_size);
-
-        let mut ip_text = vec![
-            Spans::from(self.cursor.render(vec![
-                Span::raw(&self.entered_ip)
-            ], &self)),
-            //add more lines if you want
-        ];
-        let entered_text = Paragraph::new(ip_text)
-            .style(Style::default().fg(Color::White).bg(Color::Black))
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: true });
-        rect.render_widget(entered_text, vertical_layout[0]);
-
-        let button = vec![Spans::from(vec![Span::raw("Connect")])];
-        let button_text = Paragraph::new(button)
-            .style(Style::default().fg(Color::White).bg(Color::Black))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true });
-        rect.render_widget(button_text, vertical_layout[1]);
+        let mut screen = self.screen.take().unwrap();
+        screen.render(rect, vec![size], self, state);
+        let _ = self.screen.insert(screen);
     }
 
     fn handle_input(&mut self, key_event: KeyEvent, state: &mut BackendState) -> KeyResult {
-        match key_event.code {
-            KeyCode::Esc => KeyResult::Exited,
-            KeyCode::Char(char) => {
-                self.entered_ip.push(char);
-                self.cursor.update_key();
-                KeyResult::Handled
-            },
-            KeyCode::Enter => {
-                let ip = self.entered_ip.clone();
-                match Generator::connect_to_generator(ip.clone(), state) {
-                    Ok(mut it) => {
-                        let ip = IpQuery::query(&ip);
-                        let desc = match &ip {
-                            Ok(it) => {it.to_normal_name()}
-                            Err(it) => {format!("Error fetching ip: {}", it)}
-                        };
-                        let info = format!("Connected to `{}` as {} successfully! Internal IP `{}`. Location: `{}`\nEndpoint: {}", self.entered_ip, it.id, it.internal_ip_v4, desc, it.endpoints[0]);
-                        it.description = if let Ok(it) = ip {Some(desc)} else {None};
-                        state.known_generators.push(it);
-                        state.save();
-                        KeyResult::ReplaceScreen(Box::new(DialogueBox::new("Connection success", &info)))
-                    }
-                    Err(it) => {
-                        let error = format!("failed connecting to server `{}`. Error: {}", self.entered_ip, it);
-                        KeyResult::AddScreen(Box::new(DialogueBox::new("Connection failed", &error)))
-                    }
-                }
-            },
-            KeyCode::Backspace => {
-                self.cursor.update_key();
-                self.entered_ip.pop();
-                KeyResult::Handled
-            },
-            _ => KeyResult::Passup(key_event),
-        }
+        let mut screen = self.screen.take().unwrap();
+        screen.on_key(key_event, self, state);
+        let _ = self.screen.insert(screen);
+
+        get_from_queue().unwrap_or(KeyResult::Passup(key_event))
     }
 }

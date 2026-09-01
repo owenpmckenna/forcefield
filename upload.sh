@@ -7,7 +7,7 @@ RUSTFLAGS="--cfg generator" cross build --target aarch64-unknown-linux-gnu --rel
 RUST_BACKTRACE=1 RUSTFLAGS="--cfg generator" cargo build --release
 echo "[+] uploading gen..."
 #141.148.52.76
-scp ./target/release/forcefield ubuntu@141.148.52.76:/home/ubuntu/forcefield_51820
+scp ./target/release/forcefield ubuntu@129.159.168.1:/home/ubuntu/forcefield_51820
 scp ./target/aarch64-unknown-linux-gnu/release/forcefield owen@192.168.0.166:/home/owen/forcefield_8080
 
 echo "[+] building citadel..."
@@ -17,4 +17,4 @@ echo "[+] running citadel..."
 cp ./target/release/forcefield /home/owen/Downloads/forcefield/
 cd /home/owen/Downloads/forcefield/
 chmod +x forcefield
-./forcefield
+#./forcefield

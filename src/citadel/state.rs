@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 use std::{default, fs};
+use crossbeam_channel::{Receiver, Sender};
+use crate::citadel::ui::ui_main::KeyResult;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BackendState {
@@ -21,7 +23,9 @@ pub struct BackendState {
     pub current_wg_setup: Option<WireguardState>,
     pub current_wg_ids: Vec<String>,
     ///has the same length as "current_wg_ids", each Endpoint represents how we reach the corresponding generator
-    pub endpoints_used: Vec<Endpoint>
+    pub endpoints_used: Vec<Endpoint>,
+    #[serde(skip, default)]
+    pub channels: Option<(Sender<KeyResult>, Receiver<KeyResult>)>
 }
 static FILE: &str = "conf.conf";
 impl BackendState {
@@ -38,7 +42,8 @@ impl BackendState {
                     known_generators: vec![],
                     current_wg_setup: None,
                     current_wg_ids: vec![],
-                    endpoints_used: vec![]
+                    endpoints_used: vec![],
+                    channels: None
                 };
                 data.save();
                 data
@@ -241,6 +246,15 @@ impl BackendState {
         self.endpoints_used = list.into_iter().map(|(_, it)| it).collect();
         self.send_wakeups()?;
         Ok(())
+    }
+    pub fn get_index_by_id(&self, id: &str) -> Option<usize> {
+        self.known_generators.iter().enumerate()
+            .find(|it| it.1.id.eq(&id))
+            .map(|it| it.0)
+    }
+    pub fn get_next_gen(&self, id: &str) -> Option<String> {
+        let nid = self.current_wg_ids.iter().position(|it| it.eq(id))?;
+        self.current_wg_ids.get(nid + 1).map(Clone::clone)
     }
     pub fn get_by_id(&self, id: &str) -> Option<&Generator> {
         for i in 0..self.known_generators.len() {

@@ -12,6 +12,7 @@ pub enum Command {
     FireUDPWakeup(SocketAddr),
     FireUDPShutdown(SocketAddr),
     GetIPv6Addr,
+    RunCommand(String),
     Kill,
 }
 #[derive(Serialize, Deserialize)]
@@ -19,5 +20,6 @@ pub enum Response {
     Heartbeat(usize),
     Routes(Vec<Route>),
     GetIp(Result<String, String>),
+    CommandResponse(String),
     Ipv6Addr(Option<Ipv6Addr>)
 }

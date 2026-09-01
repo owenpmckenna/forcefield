@@ -56,7 +56,7 @@ pub struct Generator {
     config_key: OnceLock<Key>,
     pub config_key_bytes: Vec<u8>,
     pub wg_public_key: String,
-    pub description: Option<String>,
+    pub description: String,
     #[serde(skip, default)]
     pub probable_routes: Arc<Mutex<Vec<Route>>>
 }
@@ -109,7 +109,7 @@ impl Generator {
             config_key: OnceLock::new(),
             config_key_bytes: config_key.to_vec(),
             wg_public_key: String::from_utf8(twgc)?,
-            description: None,
+            description: "".into(),
             probable_routes: Arc::new(Mutex::new(vec![]))
         })
     }
@@ -176,10 +176,7 @@ impl Generator {
         None
     }
     pub fn get_generator_text(&self, endpoint: &Option<&Endpoint>) -> String {
-        let desc = match &self.description {
-            None => {""}
-            Some(it) => {&format!(" - {}", it)}
-        };
+        let desc = format!(" - {}", self.description);
         let conn = if let Some(end) = endpoint {
             format!(": {}", end)
         } else {"".into()};

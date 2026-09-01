@@ -1,27 +1,26 @@
 use crate::citadel::control_connection::ControlConnection;
 use crate::citadel::handshaker::{Endpoint, Generator};
 use crate::citadel::state::BackendState;
-use crate::citadel::ui::cursor::Cursor;
 use crate::citadel::ui::dialogue_box::DialogueBox;
 use crate::citadel::ui::generator_control_screen::ScreenSelected::{Control, Data, Routes};
 use crate::citadel::ui::ui_main::KeyResult::{AddScreen, Exited, Handled, ReplaceScreen};
 use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
+use crate::citadel::ui_utils::cursor::Cursor;
+use crate::common::errors::FFResult;
 use crossterm::event::KeyCode::Up;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::cmp::PartialEq;
-use std::env::args;
 use std::io::Stdout;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
+use tui::Frame;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Alignment, Constraint, Direction, Layout};
 use tui::style::{Color, Style};
 use tui::text::{Span, Spans};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use tui::Frame;
-use crate::common::errors::FFResult;
 
 pub struct GeneratorControlScreen {
     gen_id: String,
@@ -79,10 +78,7 @@ impl GeneratorControlScreen {
         if gs.connection.is_some() {
             gs.peer_via_endpoint = Self::can_add_via_peer_endpoint(ge, state);
         }
-        gs.description_text = match &ge.description {
-            None => "".into(),
-            Some(it) => it.clone(),
-        };
+        gs.description_text = ge.description.clone();
         gs
     }
     fn get_gen_mut<'a>(&self, state: &'a mut BackendState) -> &'a mut Generator {
@@ -122,7 +118,7 @@ impl GeneratorControlScreen {
             Endpoint::FromPeer(it, _) => {it}
         };
         if let None = ge.endpoints.iter().position(|it| it == &Endpoint::ViaPeer(next_id.to_string())) {
-                Some((next_id.to_string(), sock_addr.clone()))
+                Some((next_id.to_string(), sock_addr))
         } else {
             None
         }
@@ -167,8 +163,6 @@ impl RenderWidget for GeneratorControlScreen {
 
         let desc_same = ge
             .description
-            .as_ref()
-            .unwrap_or(&"".into())
             .eq(&self.description_text);
         let unsaved = !desc_same;
         let unnsaved_text = if unsaved { " (Unsaved)" } else { "" };
@@ -344,7 +338,7 @@ impl RenderWidget for GeneratorControlScreen {
                 match self.section {
                     Data => {
                         if self.data_selected == 0 {
-                            self.get_gen_mut(state).description = Some(self.description_text.clone());
+                            self.get_gen_mut(state).description = self.description_text.clone();
                             state.save();
                         }
                         Handled
@@ -433,7 +427,7 @@ impl RenderWidget for GeneratorControlScreen {
                                     self.peer_via_endpoint = Self::can_add_via_peer_endpoint(ge, state);
                                     self.get_gen_mut(state).endpoints.remove(self.endpoint_selected);
                                     state.save();
-                                    DialogueBox::new("Route Creation Succeeded", &format!("{}", it))
+                                    DialogueBox::new("Route Creation Succeeded", &it.to_string())
                                 },
                                 Err(it) => {DialogueBox::new("Route Creation Failed", &format!("{}", it))},
                             }));

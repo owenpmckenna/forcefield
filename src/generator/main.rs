@@ -20,14 +20,19 @@ use rsa::pkcs8::DecodePublicKey;
 use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
 use std::collections::HashMap;
 use std::error::Error;
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::process::exit;
+use std::os::fd::{AsFd, AsRawFd};
+use std::process::{exit, Stdio};
 use std::str::FromStr;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::OnceLock;
-use std::thread::sleep;
+use std::{io, thread};
+use std::thread::{sleep, Thread};
 use std::time::Duration;
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use polling::{Event, Events, Poller};
 use rand::RngExt;
 
 static PUB_KEY_TEXT: &str = include_str!("../../key/public.pem");
@@ -224,6 +229,15 @@ fn do_loop(config: &mut Config, mut stream: TcpStream, cipher: &mut XChaCha20Pol
             let ipv6 = get_pub_ipv6_addr(DEFAULT_DEVICE.get().unwrap());
             let data = serde_json::to_vec(&Response::Ipv6Addr(ipv6))?;
             write_encrypted_data(&mut stream, cipher, &data)?;
+        },
+        Command::RunCommand(cmd) => {
+            println!("running command...");
+            let out = match run_command(cmd) {
+                Ok(it) => {it}
+                Err(it) => {format!("ERROR: {}", it)}
+            };
+            let out = serde_json::to_vec(&Response::CommandResponse(out))?;
+            write_encrypted_data(&mut stream, cipher, &out)?;
         }
         Command::Kill => {
             println!("shutdown");
@@ -235,6 +249,59 @@ fn do_loop(config: &mut Config, mut stream: TcpStream, cipher: &mut XChaCha20Pol
         }
     }
     Ok(stream)
+}
+pub fn run_command(cmd: String) -> Result<String, Box<dyn Error>> {
+    let mut total = Vec::with_capacity(100);
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .spawn()?;
+    let mut stdout = Some(child.stdout.take().unwrap());
+    let mut stderr = Some(child.stderr.take().unwrap());
+    for i in [stdout.as_ref().unwrap().as_fd(), stderr.as_ref().unwrap().as_fd()] {
+        let flags = fcntl(i, FcntlArg::F_GETFL)?;
+        fcntl(i, FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK))?;
+    }
+    let poller = Poller::new()?;
+    unsafe {
+        poller.add(stdout.as_ref().unwrap(), Event::readable(10))?;
+        poller.add(stderr.as_ref().unwrap(), Event::readable(11))?;
+    }
+    let mut events = Events::new();
+    let mut t_buf = [0u8; 1024 * 8];
+    while stdout.is_some() || stderr.is_some() {
+        events.clear();
+        poller.wait(&mut events, None)?;
+        for ev in events.iter() {
+            let data = if ev.key == 10 {
+                stdout.as_mut().map(|it| it.read(&mut t_buf))
+            } else { stderr.as_mut().map(|it| it.read(&mut t_buf)) };
+            if let Some(data) = data {
+                match data {
+                    Ok(0) => {
+                        //means we need to close
+                        if ev.key == 10 {
+                            stdout = None;
+                        } else {
+                            stderr = None;
+                        }
+                    }
+                    Ok(it) => {
+                        total.extend_from_slice(&t_buf[0..it]);
+                    }
+                    Err(it) => {
+                        if it.kind() != io::ErrorKind::WouldBlock {
+                            return Err(it.into())
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&total).to_string())
 }
 static IDENTIFIER: AtomicU16 = AtomicU16::new(42);
 pub fn ping(addr: IpAddr) -> FFResult<()> {

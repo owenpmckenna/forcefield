@@ -1,22 +1,22 @@
-use std::cmp::PartialEq;
+use crate::citadel::handshaker::Endpoint;
 use crate::citadel::state::BackendState;
 use crate::citadel::ui::dialogue_box::DialogueBox;
 use crate::citadel::ui::ui_main::KeyResult::{AddScreen, Handled, ReplaceScreen};
 use crate::citadel::ui::ui_main::{KeyResult, RenderWidget};
+use crate::citadel::ui_utils::cursor::Cursor;
 use crate::common::cmd::exec;
+use crate::common::ip::get_routable_address;
+use crate::common::wireguard::{Route, get_routes};
 use crossterm::event::{KeyCode, KeyEvent};
-use std::io::{Stdout};
+use std::cmp::PartialEq;
+use std::io::Stdout;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use tui::Frame;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Alignment, Constraint, Direction, Layout};
 use tui::style::{Color, Style};
 use tui::text::{Span, Spans, Text};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use tui::Frame;
-use crate::citadel::handshaker::Endpoint;
-use crate::citadel::ui::cursor::Cursor;
-use crate::common::ip::get_routable_address;
-use crate::common::wireguard::{get_routes, Route};
 
 pub struct RouteSetupScreen {
     current: usize,

@@ -1,33 +1,13 @@
 #cargo-features = ["build-std"]
 
-[package]
-name = "forcefield"
-version = "0.1.0"
-edition = "2024"
+#[package]
+#name = "forcefield"
+#version = "0.1.0"
+#edition = "2024"
 
-[dependencies]
-crossbeam-channel = "0.5.15"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-rsa = "0.10.0-rc.18"
-rand = "0.10.1"
-regex-lite = "0.1.9"
-chacha20poly1305 = "0.10"
-x25519-dalek = { version = "3.0.0-rc.0", features = ["static_secrets"] }
-base64 = "0.22.1"
-ipnet = { version = "2.12.0", features = ["default", "serde"] }
-openport = { version = "0.3.0", features = ["default", "rand"] }
-tui = "0.19"
-crossterm = "0.25"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
-minreq = { version = "3.0.0", features = ["https-rustls-probe"] }
-icmp-socket = "0.2.0"
-nix = { version = "0.31.3", features = ["fs"] }
-polling = "3.11.0"
-wstunnel = { git = "https://github.com/owenpmckenna/wstunnel", package = "wstunnel" }
-tokio = "1.53.1"
-fdlimit = "0.3.0"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+[workspace]
+resolver = "3"
+members = ["common", "citadel", "generator"]
 
 [profile.release]
 opt-level = 2

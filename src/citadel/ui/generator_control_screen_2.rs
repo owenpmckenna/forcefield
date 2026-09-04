@@ -14,6 +14,7 @@ use crate::citadel::ui::main_options_screen::MainOptionsScreen;
 use crate::citadel::ui::ui_main::{add_screen, RenderWidget, KeyResult, get_from_queue};
 use crate::citadel::ui_utils::screen::{ButtonElement, Element, Pane, Screen, TextInputElement, TextView};
 use crate::common::errors::FFResult;
+use crate::common::wireguard::EndpointAddr::{Active, Passive};
 
 pub struct GeneratorControlScreen2 {
 	gen_id: usize,
@@ -170,8 +171,8 @@ impl GeneratorControlScreen2 {
 		let next = state.get_by_id(&state.get_next_gen(&us.id).unwrap()).unwrap();
 		let us_conn = self.connection.as_mut().unwrap();
 		let mut next_conn = ControlConnection::connect((IpAddr::V4(next.internal_ip_v4), next.config_port).into(), state)?;
-		let n_routes = next_conn.order_create_wg(&us.wg_public_key, us.internal_ip_v4, us.internal_ip_v6, None)?;
-		let u_routes = us_conn.order_create_wg(&next.wg_public_key, next.internal_ip_v4, next.internal_ip_v6, Some(peer_via_endpoint))?;
+		let n_routes = next_conn.order_create_wg(&us.wg_public_key, us.internal_ip_v4, us.internal_ip_v6, Passive)?;
+		let u_routes = us_conn.order_create_wg(&next.wg_public_key, next.internal_ip_v4, next.internal_ip_v6, Active(peer_via_endpoint))?;
 		let next = next.id.clone();//yeah lifetime name shadowing shut up
 		let us = self.get_gen_mut(state);
 		us.endpoints.push(Endpoint::ViaPeer(next.clone()));

@@ -8,7 +8,7 @@ use rand::Rng;
 use std::io::{ErrorKind, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::time::Duration;
-use crate::common::wireguard::Route;
+use crate::common::wireguard::{EndpointAddr, Route};
 
 pub struct ControlConnection {
     pub server_id: String,
@@ -72,6 +72,21 @@ impl ControlConnection {
             }
         }
     }
+    pub fn send_command(&mut self, cmd: String) -> FFResult<String> {
+        let ip0 = Command::RunCommand(cmd);
+        let ip = serde_json::to_string(&ip0)?;
+        self.write_encrypted_data(ip.as_bytes())?;
+        let resp = self.read_encrypted_data()?;
+        let hb_resp: Response = serde_json::from_str(&String::from_utf8(resp)?)?;
+        match hb_resp {
+            Response::CommandResponse(it) => {
+                Ok(it)
+            }
+            _ => {
+                Err(Box::new(WrongResponseType))
+            }
+        }
+    }
 
     pub fn send_get_routes(&mut self) -> FFResult<Vec<Route>> {
         let r0 = Command::GetRoutes;
@@ -92,7 +107,7 @@ impl ControlConnection {
             }
         }
     }
-    pub fn order_create_wg(&mut self, peer_wg_pub: &str, peer_internal_ipv4: Ipv4Addr, peer_internal_ipv6: Ipv6Addr, endpoint: Option<SocketAddr>) -> FFResult<Vec<Route>> {
+    pub fn order_create_wg(&mut self, peer_wg_pub: &str, peer_internal_ipv4: Ipv4Addr, peer_internal_ipv6: Ipv6Addr, endpoint: EndpointAddr) -> FFResult<Vec<Route>> {
         let cwp0 = Command::CreateWireguardPeer((peer_wg_pub.into(), (peer_internal_ipv4, peer_internal_ipv6), endpoint));
         self.write_read_routes(cwp0)
     }

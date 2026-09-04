@@ -3,7 +3,7 @@ use crate::common::commands::{Command, Response};
 use crate::common::errors::FFError::ICMPPacketError;
 use crate::common::errors::{FFError, FFResult};
 use crate::common::setup_handshake::{read_encrypted_data, read_packet, write_encrypted_data, write_packet, ConfigMessage};
-use crate::common::wireguard::{get_default_route_v4, get_default_route_v6, get_pub_ipv6_addr, get_routes, Route, Wireguard, WireguardPeer};
+use crate::common::wireguard::{get_default_route_v4, get_default_route_v6, get_pub_ipv6_addr, get_routes, Route, Wireguard, WireguardPeer, EndpointAddr};
 use crate::generator::config::Config;
 use crate::generator::init_config::InitialConfig;
 use crate::generator::on_wakeup::do_wakeup;
@@ -23,17 +23,18 @@ use std::error::Error;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsFd, AsRawFd};
-use std::process::{exit, Stdio};
+use std::process::{exit, Stdio, Child};
 use std::str::FromStr;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::{io, thread};
 use std::thread::{sleep, Thread};
 use std::time::Duration;
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use polling::{Event, Events, Poller};
 use rand::RngExt;
+use crate::common::wireguard::EndpointAddr::Passive;
 
 static PUB_KEY_TEXT: &str = include_str!("../../key/public.pem");
 pub fn generator_main() {
@@ -85,18 +86,17 @@ fn attempt_run(listener: &TcpListener, our_key: &Vec<u8>, our_wg_key: &Vec<u8>, 
     println!("read and decrypted config packet. Id: {}, ip4: {}, ip6: {}", out.server_id, out.server_ipv4, out.server_ipv6);
     Ok(out)
 }
-fn add_to_wireguard(config: &mut Config, wg: &mut Wireguard, (pub_key, (internal_ipv4, internal_ipv6), endpoint): &(String, (Ipv4Addr, Ipv6Addr), Option<SocketAddr>)) -> Vec<Route> {
+fn add_to_wireguard(config: &mut Config, wg: &mut Wireguard, (pub_key, (internal_ipv4, internal_ipv6), endpoint): &(String, (Ipv4Addr, Ipv6Addr), EndpointAddr)) -> Vec<Route> {
     let (internal_ipv4, internal_ipv6) = (IpNet::V4((*internal_ipv4).into()), IpNet::V6((*internal_ipv6).into()));
     let wgp = WireguardPeer::new(pub_key.clone(), vec![internal_ipv4, internal_ipv6], *endpoint);
     let local_ipv4 = &config.server_ipv4;
     let local_ipv6 = &config.server_ipv6;
     let route_v4 = Route::new(internal_ipv4, None, Some("uwu0".into()), Some(local_ipv4.parse().unwrap()));
     let route_v6 = Route::new(internal_ipv6, None, Some("uwu0".into()), Some(local_ipv6.parse().unwrap()));
-    wg.spawn_peer(&wgp);
-    wg.peers.push(wgp);
+    wg.spawn_peer_add(wgp);
     route_v4.add_self();
     route_v6.add_self();
-    if endpoint.is_some() {
+    if endpoint.addr().is_some() {
         let ipaddr = route_v4.addresses.hosts().next().unwrap();
         let _ = ping(ipaddr);//wakeup
     };
@@ -134,13 +134,15 @@ fn run(mut config: Config) {
     exec(format!("ip6tables -t nat -A POSTROUTING -s fd80:51e8:5d8e::1/128 -d fd80:51e8:5d8e::/48 -o uwu0 -j SNAT --to-source {}", config.server_ipv6));
     //if it's from any peer and it's going to *not* another generator, NAT it and send it to the main internet
     exec(format!("ip6tables -t nat -A POSTROUTING -s fd80:51e8:5d8e::/48 -o {} -j MASQUERADE", def_dev));
-    let peers = vec![WireguardPeer::new(config.citadel_wg_pub.clone(), vec!["10.69.0.1/32".parse().unwrap(), "0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap(), "fd80:51e8:5d8e::1/128".parse().unwrap()], None)];
+    let peers = vec![WireguardPeer::new(config.citadel_wg_pub.clone(), vec!["10.69.0.1/32".parse().unwrap(), "0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap(), "fd80:51e8:5d8e::1/128".parse().unwrap()], Passive)];
     let mut wg = Wireguard::new(config.port, config.gen_wg_priv.clone(), config.gen_wg_pub.clone(), "uwu0".to_string(), Ipv4Addr::from_str(&config.server_ipv4).unwrap(), Ipv6Addr::from_str(&config.server_ipv6).unwrap(), peers);
     let mut routes = HashMap::new();
     wg.spawn();
     for i in config.get_peers() {
         routes.insert(i.0.clone(), add_to_wireguard(&mut config, &mut wg, &i));
     }
+    setup_ws(80, config.port);
+    setup_ws(config.port, config.port);
     let mut cipher = XChaCha20Poly1305::new(config.get_config_key());
     let listener_data = prep_receive_connections(config.config_port);
     loop {
@@ -279,14 +281,17 @@ pub fn run_command(cmd: String) -> Result<String, Box<dyn Error>> {
             let data = if ev.key == 10 {
                 stdout.as_mut().map(|it| it.read(&mut t_buf))
             } else { stderr.as_mut().map(|it| it.read(&mut t_buf)) };
+            if ev.key == 10 {
+                poller.modify(stdout.as_ref().unwrap(), Event::readable(10))?;
+            } else {poller.modify(stderr.as_ref().unwrap(), Event::readable(11))?;}
             if let Some(data) = data {
                 match data {
                     Ok(0) => {
                         //means we need to close
                         if ev.key == 10 {
-                            stdout = None;
+                            poller.delete(stdout.take().unwrap())?;
                         } else {
-                            stderr = None;
+                            poller.delete(stderr.take().unwrap())?;
                         }
                     }
                     Ok(it) => {
@@ -323,4 +328,18 @@ pub fn ping(addr: IpAddr) -> FFResult<()> {
         }
     }
     Ok(())
+}
+static CHILDREN: LazyLock<Mutex<Vec<Child>>> = LazyLock::new(|| Mutex::new(vec![]));
+pub fn setup_ws(http_port: u16, wg_port: u16) {
+    //wstunnel server --restrict-to localhost:51820 wss://[::]:443
+    let proc = std::process::Command::new("wstunnel")
+        .args([
+            "server",
+            "--restrict-to",
+            &format!("localhost:{}", wg_port),
+            &format!("ws://[::]:{}", http_port)
+        ])
+        .spawn()
+        .unwrap();
+    CHILDREN.lock().unwrap().push(proc)
 }

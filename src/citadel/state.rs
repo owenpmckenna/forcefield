@@ -2,7 +2,7 @@ use crate::citadel::control_connection::ControlConnection;
 use crate::citadel::handshaker::{Endpoint, Generator};
 use crate::common::cmd::exec;
 use crate::common::errors::{FFError, FFResult};
-use crate::common::wireguard::{generate_wireguard_keys, get_default_route_v4, get_default_route_v6, get_routes, Route, Wireguard, WireguardPeer, WireguardState};
+use crate::common::wireguard::{generate_wireguard_keys, get_default_route_v4, get_default_route_v6, get_routes, Route, Wireguard, WireguardPeer, WireguardState, EndpointAddr};
 use ipnet::{IpNet, Ipv6Net};
 use openport::pick_random_unused_port;
 use rand::distr::Alphanumeric;
@@ -14,7 +14,7 @@ use std::{default, fs};
 use crossbeam_channel::{Receiver, Sender};
 use crate::citadel::ui::ui_main::KeyResult;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize)]
 pub struct BackendState {
     pub our_wg_pub: String,
     pub our_wg_priv: String,
@@ -122,7 +122,7 @@ impl BackendState {
     pub fn create_wg_setup(&mut self, list: Vec<(usize, Endpoint)>, addresses: String) -> FFResult<()> {
         let addresses: Vec<IpNet> = addresses.split(",").map(IpNet::from_str).map(Result::unwrap).collect();
         self.send_shutdowns();
-        if let Some(setup) = self.current_wg_setup.take() {
+        if let Some(mut setup) = self.current_wg_setup.take() {
             setup.down();
         }
         self.current_wg_ids = vec![];
@@ -152,22 +152,22 @@ impl BackendState {
                 WireguardPeer::new(
                     it.wg_public_key.clone(),
                     allowed_ip,
-                    Some(*end)
+                    EndpointAddr::Active(*end)
                 )
             })
             .collect();
         for i in 0..(list.len()-1) {
             //well, this won't work if there's no endpoint...
-            let endpoint = peers[i+1].endpoint.unwrap().ip().into();
+            let addr = &peers[i+1].endpoint.addr();
+            peers[i].allowed_ips.push(addr.unwrap().ip().into());
             let internal_ipv4 = self.known_generators[list[i].0].internal_ip_v4.into();
             let internal_ipv6 = self.known_generators[list[i].0].internal_ip_v6.into();
-            peers[i].allowed_ips.push(endpoint);
             peers[i].allowed_ips.push(IpNet::V4(internal_ipv4));
             peers[i].allowed_ips.push(IpNet::V6(internal_ipv6));
         }
-        let wireguard = Wireguard::new(pick_random_unused_port().unwrap(), self.our_wg_priv.clone(),
-                                       self.our_wg_pub.clone(), "uwu0".to_string(), Ipv4Addr::from_str("10.69.0.1").unwrap(),
-                                       Ipv6Addr::from_str("fd80:51e8:5d8e::1").unwrap(), peers);
+        let mut wireguard = Wireguard::new(pick_random_unused_port().unwrap(), self.our_wg_priv.clone(),
+                                           self.our_wg_pub.clone(), "uwu0".to_string(), Ipv4Addr::from_str("10.69.0.1").unwrap(),
+                                           Ipv6Addr::from_str("fd80:51e8:5d8e::1").unwrap(), peers);
         let peers = &wireguard.peers;
         let routes = get_routes();
         let mut default = None;
@@ -232,14 +232,14 @@ impl BackendState {
                 ));
             }
         }
+        let ipv4s = peers.iter().filter_map(|it| it.endpoint.addr())
+            .filter(|it| it.ip().is_ipv4()).count();
+        let ipv6s = peers.iter().filter_map(|it| it.endpoint.addr())
+            .filter(|it| it.ip().is_ipv6()).count();
         wireguard.spawn();
         for i in &routes_to_add {
             i.add_self();
         }
-        let ipv4s = peers.iter().filter(|it| it.endpoint.is_some())
-            .filter(|it| it.endpoint.unwrap().ip().is_ipv4()).count();
-        let ipv6s = peers.iter().filter(|it| it.endpoint.is_some())
-            .filter(|it| it.endpoint.unwrap().ip().is_ipv6()).count();
         exec(format!("ip link set uwu0 mtu {}", 1500 - 60 * ipv4s - 80 * ipv6s));
         self.current_wg_setup = Some(WireguardState::new(routes_to_add, vec![wireguard], default_v4, default_v6));
         self.current_wg_ids = list.iter().map(|(it, _)| self.known_generators[*it].id.clone()).collect();
@@ -300,5 +300,5 @@ impl BackendState {
     }*/
 }
 fn simple_peer_to_cidr(peer: &WireguardPeer) -> Option<IpNet> {
-    peer.endpoint.map(|it| it.ip().into())
+    peer.endpoint.addr().map(|it| it.ip().into())
 }

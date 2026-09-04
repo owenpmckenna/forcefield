@@ -1,5 +1,5 @@
 use crate::common::setup_handshake::ConfigMessage;
-use crate::common::wireguard::Wireguard;
+use crate::common::wireguard::{EndpointAddr, Wireguard};
 use crate::generator::init_config::InitialConfig;
 use chacha20poly1305::Key;
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ pub struct Config {
     pub gen_wg_priv: String,
     pub citadel_wg_pub: String,
     ///the Option<String> is actually an Option<SocketAddr>
-    pub peers: Vec<(String, (Ipv4Addr, Ipv6Addr), Option<String>)>
+    pub peers: Vec<(String, (Ipv4Addr, Ipv6Addr), EndpointAddr)>
 }
 static FILE: &str = "conf.conf";
 impl Config {
@@ -62,13 +62,13 @@ impl Config {
     fn delete() {
         fs::remove_file(FILE).unwrap();
     }
-    pub fn get_peers(&self) -> Vec<(String, (Ipv4Addr, Ipv6Addr), Option<SocketAddr>)> {
+    pub fn get_peers(&self) -> Vec<(String, (Ipv4Addr, Ipv6Addr), EndpointAddr)> {
         self.peers.iter().map(|it| 
-            (it.0.clone(), (it.1.0.clone(), it.1.1.clone()), it.2.as_ref().map(|it| it.parse().unwrap()))
+            (it.0.clone(), (it.1.0.clone(), it.1.1.clone()), it.2)
         ).collect()
     }
-    pub fn add_peer(&mut self, peer: (String, (Ipv4Addr, Ipv6Addr), Option<SocketAddr>)) {
-        self.peers.push((peer.0, (peer.1.0, peer.1.1), peer.2.map(|it| it.to_string())))
+    pub fn add_peer(&mut self, peer: (String, (Ipv4Addr, Ipv6Addr), EndpointAddr)) {
+        self.peers.push((peer.0, (peer.1.0, peer.1.1), peer.2))
     }
     pub fn get_citadel_peer_index(&self, wg: &Wireguard) -> usize {
         wg.peers.iter().position(|it| it.public_key.eq(&self.citadel_wg_pub)).unwrap()

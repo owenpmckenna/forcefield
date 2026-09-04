@@ -4,10 +4,12 @@ use crate::common::cmd::exec;
 use crate::common::ip::Port;//Port is type alias for u16
 use ipnet::{IpNet, Ipv6Net};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::process::{Child, Command};
 use std::str::FromStr;
+use std::sync::{LazyLock, OnceLock};
 
 //remember to use `ip route get 8.8.8.8` for test and `ip rule`
-#[derive(Clone)]
+#[derive()]
 pub struct WireguardState {
     pub routes: Vec<Route>,
     pub wg_interfaces: Vec<Wireguard>,
@@ -16,11 +18,11 @@ pub struct WireguardState {
 }
 
 impl WireguardState {
-    pub(crate) fn down(&self) {
+    pub(crate) fn down(&mut self) {
         for route in &self.routes {
             route.remove_self();
         }
-        for wg in &self.wg_interfaces {
+        for wg in &mut self.wg_interfaces {
             wg.kill();
         }
         let reset_default = Self::is_everything(&self.routes.last().unwrap().addresses);
@@ -101,7 +103,7 @@ fn empty<T, F>(me: &Option<T>, u: F) -> String where F: FnOnce(&T) -> String {
         u(it)
     } else {"".to_string()}
 }
-#[derive(Clone)]
+#[derive()]
 pub struct Wireguard {
     pub listen_port: Port,
     pub priv_key: String,
@@ -110,13 +112,14 @@ pub struct Wireguard {
     pub name: String,
     pub local_ipv4: Ipv4Addr,
     pub local_ipv6: Ipv6Addr,
-    pub peers: Vec<WireguardPeer>
+    pub peers: Vec<WireguardPeer>,
+    pub children: Vec<Child>
 }
 impl Wireguard {
     pub fn new(listen_port: Port, priv_key: String, pub_key: String, name: String, local_ipv4: Ipv4Addr, local_ipv6: Ipv6Addr, peers: Vec<WireguardPeer>) -> Self {
-        Self { listen_port, priv_key, pub_key, name, local_ipv4, local_ipv6, peers }
+        Self { listen_port, priv_key, pub_key, name, local_ipv4, local_ipv6, peers, children: vec![] }
     }
-    pub fn spawn(&self) {
+    pub fn spawn(&mut self) {
         exec(format!("ip link add dev {} type wireguard", self.name));
         exec(format!("ip address add dev {} {}/16", self.name, self.local_ipv4));
         exec(format!("ip address add dev {} {}/48", self.name, self.local_ipv6));
@@ -124,27 +127,39 @@ impl Wireguard {
         fs::write("TMPKEY", &self.priv_key).unwrap();
         exec(format!("wg set {} private-key TMPKEY", self.name));
         fs::remove_file("TMPKEY").unwrap();
-        for peer in &self.peers {
+        for peer in 0..self.peers.len() {
             self.spawn_peer(peer)
         }
         exec(format!("ip link set up dev {}", self.name));
     }
-    pub fn spawn_peer(&self, peer: &WireguardPeer) {
+    pub fn spawn_peer(&mut self, peer: usize) {
+        let peer = &mut self.peers[peer];
         let addrs = peer.allowed_ips.iter()
             .map(IpNet::to_string)
             .collect::<Vec<String>>()
             .join(",");
-        let endpoint = empty(&peer.endpoint, |a| format!(" endpoint {}:{}", a.ip(), a.port()));
+        let endpoint = match peer.endpoint {
+            EndpointAddr::Passive => {""}
+            EndpointAddr::Active(a) => {&format!(" endpoint {}:{}", a.ip(), a.port())}
+            EndpointAddr::ActiveWstunnel(it) => {
+                let ws_port = pick_random_unused_port().unwrap();
+                //wstunnel client -L 'udp://51820:localhost:51820?timeout_sec=0' wss://my.server.com:443
+                let wst = Command::new("wstunnel")
+                    .args(["client", "-L"])
+                    .arg(&format!("udp://{}:localhost:{}?timeout_sec=0", ws_port, ws_port))
+                    .arg(&format!("ws://{}", it))
+                    .spawn()
+                    .unwrap();
+                self.children.push(wst);
+                &format!(" endpoint 127.0.0.1:{}", ws_port)
+            }
+        };
         exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
     }
-    pub fn spawn_peer_add(&mut self, peer: WireguardPeer, pos: usize) {
-        let addrs = peer.allowed_ips.iter()
-            .map(IpNet::to_string)
-            .collect::<Vec<String>>()
-            .join(",");
-        let endpoint = empty(&peer.endpoint, |a| format!(" endpoint {}:{}", a.ip(), a.port()));
-        exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
-        self.peers.insert(pos, peer);
+    pub fn spawn_peer_add(&mut self, peer: WireguardPeer) {
+        let last = self.peers.len();
+        self.peers.push(peer);
+        self.spawn_peer(last);
     }
     pub fn remove_peer(&mut self, wg_key: &str) -> WireguardPeer {
         let pos = self.peers.iter().position(|it| it.public_key.eq(wg_key))
@@ -152,7 +167,7 @@ impl Wireguard {
         exec(format!("wg set {} peer {} remove", self.name, wg_key));
         self.peers.remove(pos)
     }
-    pub fn try_remove_allowed_ip_from_peer(&mut self, peer: usize, allowed_ip: IpNet) {
+    /*pub fn try_remove_allowed_ip_from_peer(&mut self, peer: usize, allowed_ip: IpNet) {
         let wgp: &WireguardPeer = &self.peers[peer];
         let id = wgp.allowed_ips.iter().position(|it| it.eq(&allowed_ip));
         if let Some(id) = id {
@@ -170,10 +185,13 @@ impl Wireguard {
         exec(format!("wg set {} peer {} remove", self.name, peer.public_key));
         peer.allowed_ips.push(allowed_ip);
         self.spawn_peer_add(peer, peer_i);
-    }
-    pub fn kill(&self) {
+    }*/
+    pub fn kill(&mut self) {
         exec(format!("ip link set down dev {}", self.name));
         exec(format!("ip link delete {}", self.name));
+        for child in &mut self.children {
+            let _ = child.kill();
+        }
     }
     pub fn first_peer(&self) -> &WireguardPeer {
         &self.peers[0]
@@ -183,18 +201,40 @@ impl Wireguard {
 pub struct WireguardPeer {
     pub public_key: String,
     pub allowed_ips: Vec<IpNet>,
-    pub endpoint: Option<SocketAddr>
+    pub endpoint: EndpointAddr
+}
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub enum EndpointAddr {
+    Passive,//we get connected to
+    Active(SocketAddr),
+    ActiveWstunnel(SocketAddr)
+}
+impl EndpointAddr {
+    pub fn addr(&self) -> Option<SocketAddr> {
+        match self {
+            EndpointAddr::Passive => {None}
+            EndpointAddr::Active(it) => {Some(*it)}
+            EndpointAddr::ActiveWstunnel(it) => {Some(*it)}
+        }
+    }
 }
 impl WireguardPeer {
-    pub fn new(public_key: String, allowed_ips: Vec<IpNet>, endpoint: Option<SocketAddr>) -> Self {
+    pub fn new(public_key: String, allowed_ips: Vec<IpNet>, endpoint: EndpointAddr) -> Self {
         Self { public_key, allowed_ips, endpoint }
     }
 }
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use crossterm::style::Stylize;
+use openport::pick_random_unused_port;
 use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::channel;
+use tracing_subscriber::EnvFilter;
+use wstunnel::config::{ClientCreationRequest, ServerCreationRequest};
+use wstunnel::executor::DefaultTokioExecutor;
+use wstunnel::run_client;
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
@@ -290,3 +330,34 @@ pub fn get_pub_ipv6_addr(device: &str) -> Option<Ipv6Addr> {
         Some(addr.addr())
     } else {None}
 }
+
+pub enum WstunnelCommands {
+    Client(ClientCreationRequest),
+    Server(ServerCreationRequest),
+    Shutdown
+}
+/*static WSTUNNELMAN: OnceLock<tokio::sync::mpsc::Sender<WstunnelCommands>> = OnceLock::new();
+fn do_wstunnelman() {
+    let (tx, mut rx) = channel(50);
+    WSTUNNELMAN.set(tx).unwrap();
+    let mut env_filter = EnvFilter::builder().parse("DEBUG").expect("Invalid log level");
+    let logger = tracing_subscriber::fmt()
+        .with_ansi(true)
+        .with_env_filter(env_filter);
+    logger.init();
+    if let Err(err) = fdlimit::raise_fd_limit() {
+        println!("Failed to set soft file limit to hard file limit: {}", err)
+    }
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    let rt = builder.enable_all().build().unwrap();
+    let out: Option<()> = rt.block_on(async {
+        loop {
+            let out = rx.recv().await?;
+            run_client(*args, DefaultTokioExecutor::default())
+                .await
+                .unwrap_or_else(|err| {
+                    panic!("Cannot start wstunnel client: {err:?}");
+                });
+        }
+    });
+}*/

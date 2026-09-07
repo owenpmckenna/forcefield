@@ -1,9 +1,14 @@
+use std::error::Error;
 use crate::cmd::exec;
 use crate::ip::Port;
 use std::fmt::{Debug, Display, Formatter};
-use std::fs; //Port is type alias for u16
+use std::fs;
+use std::fs::{File, Permissions};
+use std::io::Write;
+//Port is type alias for u16
 use ipnet::{IpNet, Ipv6Net};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command};
 use std::str::FromStr;
 
@@ -61,15 +66,12 @@ pub struct Route {
 }
 impl Display for Route {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let addr = match self.addresses.prefix_len() == 0 {
-            true => {"default"}
-            false => {&format!("{}", self.addresses)}
-        };
+        let addr = &format!("{}", self.addresses);
         let via = empty(&self.via, |it| format!(" via {}", it));
         let dev = empty(&self.device, |it| format!(" dev {}", it));
         let proto = empty(&self.proto, |it| format!(" proto {}", it));
         let src = empty(&self.src, |it| format!(" src {}", it));
-        let metric = empty(&self.proto, |it| format!(" metric {}", it));
+        let metric = empty(&self.metric, |it| format!(" metric {}", it));
         write!(f, "{}{}{}{}{}{}", addr, via, dev, proto, src, metric)
     }
 }
@@ -85,7 +87,8 @@ impl Route {
         let q6 = if let IpNet::V6(it) = self.addresses {
             " -6"
         } else {""};
-        let resp = exec(format!("ip{} route {} {}", q6, cmd, self));
+        let cm = format!("ip{} route {} {}", q6, cmd, self);
+        let resp = exec(cm);
         if resp.contains("RTNETLINK answers: File exists") && cmd.eq("add") {
             self.move_self("replace");
         }
@@ -140,13 +143,13 @@ impl Wireguard {
         let endpoint = match peer.endpoint {
             EndpointAddr::Passive => {""}
             EndpointAddr::Active(a) => {&format!(" endpoint {}:{}", a.ip(), a.port())}
-            EndpointAddr::ActiveWstunnel(it) => {
+            EndpointAddr::ActiveWstunnel(it, wg_port) => {
                 let ws_port = pick_random_unused_port().unwrap();
                 //wstunnel client -L 'udp://51820:localhost:51820?timeout_sec=0' wss://my.server.com:443
-                let wst = Command::new("wstunnel")
+                let wst = Command::new("./wstunnel")
                     .args(["client", "-L"])
-                    .arg(&format!("udp://{}:localhost:{}?timeout_sec=0", ws_port, ws_port))
-                    .arg(&format!("ws://{}", it))
+                    .arg(format!("udp://{}:localhost:{}?timeout_sec=0", ws_port, wg_port))
+                    .arg(format!("ws://{}", it))
                     .spawn()
                     .unwrap();
                 self.children.push(wst);
@@ -206,14 +209,15 @@ pub struct WireguardPeer {
 pub enum EndpointAddr {
     Passive,//we get connected to
     Active(SocketAddr),
-    ActiveWstunnel(SocketAddr)
+    ///wireguard address, then generator's actual wg port
+    ActiveWstunnel(SocketAddr, u16)
 }
 impl EndpointAddr {
     pub const fn addr(&self) -> Option<SocketAddr> {
         match self {
             EndpointAddr::Passive => {None}
             EndpointAddr::Active(it) => {Some(*it)}
-            EndpointAddr::ActiveWstunnel(it) => {Some(*it)}
+            EndpointAddr::ActiveWstunnel(it, _) => {Some(*it)}
         }
     }
 }
@@ -259,7 +263,7 @@ fn get_routes_(v4: bool) -> Vec<Route> {
             let dev_regex = Regex::new(r"dev ([^ ]+)").unwrap();
             let pro_regex = Regex::new(r"proto ([^ ]+)").unwrap();
             let src_regex = Regex::new(r"src ([^ ]+)").unwrap();
-            let met_regex = Regex::new(r"metric ([^ ]+)").unwrap();
+            let met_regex = Regex::new(r"metric ([0-9]+)").unwrap();
             let via = via_regex.captures(it)
                 .map(|it| IpAddr::from_str(&it[1]).unwrap());
             let dev = dev_regex.captures(it)
@@ -303,9 +307,9 @@ pub fn get_default_route_v6(routes: &[Route]) -> Option<&Route> {
 pub fn has_route_for_ip(ip: IpAddr) -> bool {
     has_route_for_ip_no_lookup(ip, &get_routes())
 }
-pub fn has_route_for_ip_no_lookup(ip: IpAddr, routes: &Vec<Route>) -> bool {
+pub fn has_route_for_ip_no_lookup(ip: IpAddr, routes: &[Route]) -> bool {
     //panic!("looking for ip: {}\nin routes: {:?}", ip, routes);
-    routes.iter().find(|it| it.addresses.contains(&ip)).is_some()
+    routes.iter().find(|it| it.addresses.contains(&ip) && it.addresses.prefix_len() != 0).is_some()
 }
 /*2: ens3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9000 qdisc pfifo_fast state UP group default qlen 1000
     altname enp0s3
@@ -354,3 +358,13 @@ fn do_wstunnelman() {
         }
     });
 }*/
+
+static WSTUNNEL_DATA: &[u8] = include_bytes!("/home/owen/Downloads/wstunnel/target/release/wstunnel");
+pub fn try_extract_wstunnel() -> Result<&'static str, Box<dyn Error>> {
+    let mut wst = File::create("./wstunnel")?;
+    let mut perms: Permissions = wst.metadata()?.permissions();
+    perms.set_mode(0o770);
+    wst.set_permissions(perms)?;
+    wst.write_all(WSTUNNEL_DATA)?;
+    Ok("./wstunnel")
+}

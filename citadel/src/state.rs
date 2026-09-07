@@ -10,8 +10,10 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
-use std::{default, fs};
+use std::{fs};
+use std::io::SeekFrom::End;
 use crossbeam_channel::{Receiver, Sender};
+use common::ip::Port;
 use crate::ui::ui_main::KeyResult;
 
 #[derive(Serialize, Deserialize)]
@@ -23,7 +25,7 @@ pub struct BackendState {
     pub current_wg_setup: Option<WireguardState>,
     pub current_wg_ids: Vec<String>,
     ///has the same length as "current_wg_ids", each Endpoint represents how we reach the corresponding generator
-    pub endpoints_used: Vec<Endpoint>,
+    pub endpoints_used: Vec<(Endpoint, Option<Port>)>,
     #[serde(skip, default)]
     pub channels: Option<(Sender<KeyResult>, Receiver<KeyResult>)>
 }
@@ -119,8 +121,7 @@ impl BackendState {
         errored_out
     }
     ///list is a list, in order, of which servers to use. it's indexes of (known_generators, connection mode)
-    pub fn create_wg_setup(&mut self, list: Vec<(usize, Endpoint)>, addresses: String) -> FFResult<()> {
-        let addresses: Vec<IpNet> = addresses.split(",").map(IpNet::from_str).map(Result::unwrap).collect();
+    pub fn create_wg_setup(&mut self, list: Vec<(usize, Endpoint, Option<u16>)>, addresses: String) -> FFResult<()> {
         self.send_shutdowns();
         if let Some(mut setup) = self.current_wg_setup.take() {
             setup.down();
@@ -130,12 +131,13 @@ impl BackendState {
         if list.is_empty() {
             return Ok(());
         }
+		let addresses: Vec<IpNet> = addresses.split(",").map(IpNet::from_str).map(Result::unwrap).collect();
 
         let mut routes_to_add = vec![];
         let generators: Vec<&Generator> = list.iter().map(|it| &self.known_generators[it.0]).collect();
-        let mut peers: Vec<WireguardPeer> = list.iter().map(|i| (&self.known_generators[i.0], &i.1))
+        let mut peers: Vec<WireguardPeer> = list.iter().map(|i| (&self.known_generators[i.0], &i.1, i.2))
             .enumerate()
-            .map(|(id, (it, end))| {
+            .map(|(id, (it, end, ws))| {
                 let mut allowed_ip = vec![];
                 //if last, tell wireguard that's the one we actually want to use. just route is not enough
                 if id == list.len() - 1 {
@@ -149,10 +151,13 @@ impl BackendState {
                     },
                     Endpoint::FromPeer(it, _) => {it}
                 };
+                let ea = if let Some(ws) = ws {
+                    EndpointAddr::ActiveWstunnel((end.ip(), ws).into(), end.port())
+                } else {EndpointAddr::Active(*end)};
                 WireguardPeer::new(
                     it.wg_public_key.clone(),
                     allowed_ip,
-                    EndpointAddr::Active(*end)
+                    ea
                 )
             })
             .collect();
@@ -240,12 +245,19 @@ impl BackendState {
         for i in &routes_to_add {
             i.add_self();
         }
-        exec(format!("ip link set uwu0 mtu {}", 1500 - 60 * ipv4s - 80 * ipv6s));
+        let mtu = Self::get_mtu_of_def_interface(&default).unwrap_or(1500) - 20;
+        let websockets = list.iter().filter(|(_,_,ws)| ws.is_some()).count();
+        exec(format!("ip link set uwu0 mtu {}", mtu - 60 * ipv4s - 80 * ipv6s - 80 * websockets));
         self.current_wg_setup = Some(WireguardState::new(routes_to_add, vec![wireguard], default_v4, default_v6));
-        self.current_wg_ids = list.iter().map(|(it, _)| self.known_generators[*it].id.clone()).collect();
-        self.endpoints_used = list.into_iter().map(|(_, it)| it).collect();
+        self.current_wg_ids = list.iter().map(|(it, _, _)| self.known_generators[*it].id.clone()).collect();
+        self.endpoints_used = list.into_iter().map(|(_, it, ws)| (it, ws)).collect();
         self.send_wakeups()?;
         Ok(())
+    }
+    fn get_mtu_of_def_interface(dr: &Route) -> Option<usize> {
+        let dev = dr.device.as_ref()?;
+        let mtu_file = fs::read_to_string(format!("/sys/class/net/{}/mtu", dev)).ok()?;
+        mtu_file.trim().parse().ok()
     }
     pub fn get_index_by_id(&self, id: &str) -> Option<usize> {
         self.known_generators.iter().enumerate()

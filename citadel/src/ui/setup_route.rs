@@ -1,72 +1,130 @@
+use crate::bvec;
 use crate::handshaker::Endpoint;
 use crate::state::BackendState;
 use crate::ui::dialogue_box::DialogueBox;
-use crate::ui::ui_main::KeyResult::{AddScreen, Handled, ReplaceScreen};
-use crate::ui::ui_main::{KeyResult, RenderWidget};
-use crate::ui_utils::cursor::Cursor;
+use crate::ui::ui_main::{KeyResult, RenderWidget, add_screen, get_from_queue, replace_screen};
+use crate::ui_utils::screen::{ButtonElement, Element, GetTextFnMut, GetTextOptions, Pane, Screen, TextInputElement, TextView};
 use common::cmd::exec;
-use common::ip::get_routable_address;
+use common::ip::{get_routable_address, Port};
 use common::wireguard::{Route, get_routes};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 use std::cmp::PartialEq;
 use std::io::Stdout;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::ops::Index;
 use tui::Frame;
 use tui::backend::CrosstermBackend;
-use tui::layout::{Alignment, Constraint, Direction, Layout};
+use tui::layout::{Constraint, Direction, Layout};
 use tui::style::{Color, Style};
-use tui::text::{Span, Spans, Text};
-use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 pub struct RouteSetupScreen {
-    current: usize,
-    current_selected: Vec<(usize, Endpoint)>,
-    mode: Mode,
-    settings_current: usize,
-    target_address: String,
-    target_addr_cursor: Cursor<RouteSetupScreen>,
-    routes: Vec<Route>,
-    pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>
-}
-#[derive(Eq, PartialEq)]
-enum Mode {
-    RoutePicker,
-    Settings
+	current_selected: Vec<(usize, Endpoint, String, Option<u16>)>,
+	cached_gen_text: Vec<(String, Style)>,
+	target_address: String,
+	routes: Vec<Route>,
+	pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>,
+	screen: Option<Screen<Self>>,
+	element_selected: usize
 }
 impl RouteSetupScreen {
+    fn cached_gen_style(&self, index: usize) -> Style {
+        self.cached_gen_text[index].1
+    }
+    pub fn available_gen_button(index: usize, state: &BackendState) -> Box<dyn Element<Self>> {
+        let mut btn = ButtonElement::new("", Box::new(move |it: &Self, _| it.cached_gen_style(index)), false, move |btn:_, us: _, state: _| {
+            us.alternate_selected(state, btn.alternate_selected);
+            //rerun the text gen
+			for i in 0..state.known_generators.len() {
+				us.selected_text(state, i);
+			}
+		});
+		btn.set_allow_selection(move |us: _, state: _| {
+			us.get_id_allowed(state, index)
+		});
+		btn.other_text = Some(GetTextFnMut::new(move |us: &Self, _| {
+			vec![&us.cached_gen_text[index].0]
+		}));
+		let mut wg_names: Vec<_> = state.known_generators[index].ws_ports.iter().map(|it| it.to_string()).collect();
+		wg_names.insert(0, "Bare".into());
+		btn.alternate_selection = GetTextOptions::new(wg_names);
+		Box::new(btn)
+    }
+	pub fn selected_gen_button(index: usize) -> Box<dyn Element<Self>> {
+		Box::new(TextView::new(move |it: &Self, _| {
+			&it.current_selected[index].2
+		}, false))
+	}
+	fn selected_to_text(index: usize, it: &String, state: &BackendState) -> (usize, Endpoint, String, Option<Port>) {
+		let end = &state.endpoints_used[index];
+		let ws = if let Some(it) = end.1 {
+			format!(" - over WS {}", it)
+		} else {"".into()};
+		(state.known_generators.iter().position(|g| g.id.eq(it)).unwrap(),
+		 end.0.clone(),
+		 format!("{} - {}{}", it, end.0, ws), end.1)
+	}
     pub fn new(state: &mut BackendState) -> Self {
-        let current_selected: Vec<(usize, Endpoint)> = state.current_wg_ids.iter().enumerate().map(|(index, it)|
-            (state.known_generators.iter().position(|g| g.id.eq(it)).unwrap(), state.endpoints_used[index].clone())
-        ).collect();
-        let target_addr_cursor = Cursor::new(|it: &RouteSetupScreen| it.mode == Mode::Settings && it.settings_current == 0);
+        let current_selected: Vec<(usize, Endpoint, String, Option<u16>)> = state.current_wg_ids.iter().enumerate().map(|(index, it)|
+            Self::selected_to_text(index, it, state)).collect();
         let routes = get_routes();
         let pub_ip = if current_selected.is_empty() {Some(get_routable_address())} else {None};
-        let mut se = Self { current: 0, current_selected, mode: Mode::RoutePicker, settings_current: 0, target_address: "0.0.0.0/0,::/0".to_string(), target_addr_cursor, routes, pub_ip };
-        se.current = if let Some((id, _)) = se.current_selected.last() {
-            *id
-        } else {*se.get_allowed_ids(state).get(0).unwrap_or(&0)};
+		let generator_buttons: Vec<Box<dyn Element<Self>>> = (0..state.known_generators.len()).into_iter().map(|it| {
+			Self::available_gen_button(it, state)
+		}).collect();
+		let mut gen_pane = Pane::new("Available Generators", generator_buttons);
+		gen_pane.render_as_list = true;
+		let mut list_pane = Pane::new("Selected Generators", (0..current_selected.len()).map(Self::selected_gen_button).collect());
+		list_pane.skip_selection = true;
+		let cidr_input: TextInputElement<Self> = TextInputElement::new("CIDR: ", |us: &mut Self, _| &mut us.target_address, |us: _, _| &us.target_address);
+		let connect_btn = ButtonElement::new_("Connect", true, |_, us: &mut Self, state: _| {
+			let cs = us.current_selected.iter().cloned().map(|(a, b, _, c)| (a, b, c)).collect();
+			match state.create_wg_setup(cs, us.target_address.to_string()) {
+				Ok(_) => {
+					let out = exec("ip route".into());
+					let output = format!("`ip route` responded with {} lines:\n{}", out.len(), out);
+					replace_screen(DialogueBox::new("Wireguard Setup Successful", &output))
+				}
+				Err(it) => {
+					let output = format!("Error occurred: {}", it);
+					add_screen(DialogueBox::new("Wireguard Setup Failed", &output))
+				}
+			}
+		});
+		let settings_pane = Pane::new("Settings", bvec![cidr_input, connect_btn]);
+        let screen = Some(Screen::new(vec![gen_pane, list_pane, settings_pane]).unwrap());
+        let mut se = Self { current_selected, cached_gen_text: vec![], target_address: "0.0.0.0/0,::/0".to_string(), routes, pub_ip, screen, element_selected: 0 };
+        for i in 0..state.known_generators.len() {
+            se.selected_text(state, i);
+        }
+		for i in 0..state.known_generators.len() {
+			if se.get_id_allowed(state, i) {
+				se.element_selected = i;
+				break
+			}
+		}
         se
     }
     fn current_selected_to_ids<'a>(&self, state: &'a BackendState) -> Vec<&'a String> {
         self.current_selected.iter().map(|it| &state.known_generators[it.0].id).collect()
     }
+	fn get_id_allowed(&self, state: &BackendState, index: usize) -> bool {
+		if let Some((id, _, _, _)) = self.current_selected.last() && *id == index {
+			return true
+		}
+		if self.current_selected.iter().position(|it| it.0 == index).is_some() {
+			return false
+		}
+		let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
+		//let available_routes = last_id.as_ref().map(|it| state.get_by_id(&it)).flatten()
+		//    .map(|it| it.probable_routes.lock().ok()).flatten();
+		!state.known_generators[index].find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info()).is_none()
+	}
     fn get_allowed_ids(&self, state: &BackendState) -> Vec<usize> {
         let mut data = Vec::with_capacity(state.known_generators.len());
         for i in 0..state.known_generators.len() {
-            if let Some((id, _)) = self.current_selected.last() && *id == i {
-                data.push(i);
-                continue
-            }
-            if self.current_selected.iter().position(|it| it.0 == i).is_some() {
-                continue;
-            }
-            let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
-            //let available_routes = last_id.as_ref().map(|it| state.get_by_id(&it)).flatten()
-            //    .map(|it| it.probable_routes.lock().ok()).flatten();
-            if state.known_generators[i].find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info()).is_none() {
-                continue;
-            }
-            data.push(i);
+			if self.get_id_allowed(state, i) {
+				data.push(i);
+			}
         }
         data
     }
@@ -75,20 +133,31 @@ impl RouteSetupScreen {
             Some(pub_ip)
         } else {None}
     }
-    fn alternate_selected(&mut self, state: &BackendState) {
-        if let Some(ind) = self.is_selected(self.current) {
+    fn current(&self) -> usize {
+        self.element_selected
+    }
+    fn alternate_selected(&mut self, state: &BackendState, ws_selected: usize) {
+        if let Some(ind) = self.is_selected(self.current()) {
             self.current_selected.remove(ind);
         } else {
             let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
-            let best = state.known_generators[self.current].find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info());
-            self.current_selected.push((self.current, best.unwrap().clone()));
+			let ge = &state.known_generators[self.current()];
+            let best = ge.find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info());
+			let (ws, wst) = if ws_selected == 0 {
+				(None, "".into())
+			} else {let port = ge.ws_ports[ws_selected - 1]; (Some(port), format!(" - over WS {}", port))};
+			let txt = format!("{} - {}{}", ge.id, best.as_ref().unwrap(), wst);
+            self.current_selected.push((self.current(), best.unwrap().clone(), txt, ws));
         }
     }
     fn is_selected(&self, index: usize) -> Option<usize> {
-        self.current_selected.iter().position(|(i, _)| *i == index)
+        self.current_selected.iter().position(|(i, _, _, _)| *i == index)
     }
-    fn selected_style(&self, pos: Option<usize>, has_route: bool) -> Style {
-        if let Some(_) = pos {
+    fn is_selected_ge(&self, state: &BackendState, ge: &str) -> Option<usize> {
+        self.current_selected.iter().position(|(it, _, _, _)| state.known_generators[*it].id == ge)
+    }
+    fn selected_style(&self, sel: bool, has_route: bool) -> Style {
+        if sel {
             Style::default().fg(Color::Blue)
         } else if has_route {
             Style::default().fg(Color::White)
@@ -96,32 +165,21 @@ impl RouteSetupScreen {
             Style::default().fg(Color::DarkGray)
         }
     }
-    fn selected_text(&self, state: &mut BackendState, index: usize) -> Text {
+    fn selected_text(&mut self, state: &BackendState, index: usize) {
+		//unselected + allowed: white, unselected + disallowed: gray, selected: blue
         let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
         let pos = self.is_selected(index);
         let useful_ip_info = if let Some(it) = self.pub_ip && (pos.eq(&Some(0)) || pos.eq(&None)) {
             Some(it)
         } else {None};
         let best = state.known_generators[index].find_best_endpoint(&self.routes, Err(last_id), useful_ip_info);
-        let style = self.selected_style(pos, best.is_some());
+        let style = self.selected_style(pos.is_some(), best.is_some());
         let it = &state.known_generators[index];
-        Text::styled(it.get_generator_text(&best), style)
-    }
-    fn safe_inc_selected(&mut self, increment: bool, gens: usize) {
-        if increment {self.current += 1;} else {self.current -= 1;}
-        self.current += gens;
-        self.current %= gens;
-    }
-    fn increment_selected(&mut self, increment: bool, state: &BackendState) {
-        match self.mode {
-            Mode::RoutePicker => {
-                let allowed = self.get_allowed_ids(state);
-                self.safe_inc_selected(increment, state.known_generators.len());
-                while !allowed.contains(&self.current) {
-                    self.safe_inc_selected(increment, state.known_generators.len());
-                }
-            }
-            Mode::Settings => {if increment {self.settings_current += 1;} else {self.settings_current -= 1;}}
+        let out = (it.get_generator_text(&best), style);
+        if self.cached_gen_text.len() <= index {
+            self.cached_gen_text.push(out)
+        } else {
+            self.cached_gen_text[index] = out;
         }
     }
 }
@@ -129,11 +187,8 @@ impl RouteSetupScreen {
 
 impl RenderWidget for RouteSetupScreen {
     fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState) {
-        self.settings_current += 1;//will add more later, probably.
-        self.settings_current %= 1;
-
         let size = rect.size();
-        let chunks = Layout::default()
+        let v = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
                 [
@@ -143,7 +198,7 @@ impl RenderWidget for RouteSetupScreen {
                     .as_ref(),
             )
             .split(size);
-        let horizontal_chunks = Layout::default()
+        let h = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(
                 [
@@ -152,110 +207,26 @@ impl RenderWidget for RouteSetupScreen {
                 ]
                     .as_ref(),
             )
-            .split(chunks[1]);
-
-        let items = (0..state.known_generators.len())
-            .map(|id| self.selected_text(state, id))
-            .map(ListItem::new).collect::<Vec<_>>();
-        let picker = List::new(items)
-            .style(Style::default().fg(Color::White))
-            .block(
-                Block::default()
-                    .borders(Borders::RIGHT | Borders::TOP | Borders::LEFT)
-                    .style(Style::default().fg(Color::White))
-                    .title("Available Generators")
-                    .border_type(BorderType::Plain),
-            )
-            .highlight_symbol("> ");
-
-        let mut list_state = ListState::default();
-        list_state.select(Some(self.current));
-
-        rect.render_stateful_widget(picker, chunks[0], &mut list_state);
-
-        let picked_list_text = self.current_selected.iter().map(|it|
-            Spans::from(vec![Span::raw(format!("{} - {}", state.known_generators[it.0].id, it.1))])
-        ).collect::<Vec<_>>();
-        let picked_list = Paragraph::new(picked_list_text)
-            .style(Style::default().fg(Color::White).bg(Color::Black))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL - Borders::RIGHT)
-                    .style(Style::default().fg(Color::White))
-                    .title("Selected Generators")
-                    .border_type(BorderType::Plain),
-            )
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: false });
-        rect.render_widget(picked_list, horizontal_chunks[0]);
-
-        let block = Block::default()
-                .borders(Borders::ALL)
-                .style(Style::default().fg(Color::White))
-                .title("Settings")
-                .border_type(BorderType::Plain);
-        let settings_size = block.inner(horizontal_chunks[1]);
-        rect.render_widget(block, horizontal_chunks[1]);
+            .split(v[1]);
 
 
-        let settings_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(&[Constraint::Min(1), /*Constraint::Min(1)*/])
-            .split(settings_size);
-
-        let fg = if self.mode == Mode::Settings && self.settings_current == 0 { Color::White } else { Color::Gray };
-        let addr_text = Spans::from(self.target_addr_cursor.render(vec![Span::raw(self.target_address.clone())], &self));
-        let target_addr_box = Paragraph::new(addr_text)
-            .style(Style::default().fg(fg).bg(Color::Black))
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: false });
-        rect.render_widget(target_addr_box, settings_chunks[0]);
+		let mut screen = self.screen.take().unwrap();
+		self.element_selected = screen.panes[0].element_selected;
+		let sel = self.current_selected.len();
+		if sel > screen.panes[1].elements.len() {
+			screen.panes[1].elements.push(Self::selected_gen_button(sel - 1))
+		}
+		if sel < screen.panes[1].elements.len() {
+			screen.panes[1].elements.pop();
+		}
+		screen.render(rect, vec![v[0], h[0], h[1]], self, state);
+		let _ = self.screen.insert(screen);
     }
     fn handle_input(&mut self, key_event: KeyEvent, state: &mut BackendState) -> KeyResult {
-        match key_event.code {
-            KeyCode::Down => { self.increment_selected(true, state); Handled}
-            KeyCode::Up => { self.increment_selected(false, state); Handled}
-            KeyCode::Enter => {
-                if self.mode == Mode::RoutePicker {
-                    self.mode = Mode::Settings;
-                    return Handled;
-                }
-                match state.create_wg_setup(self.current_selected.clone(), self.target_address.to_string()) {
-                    Ok(_) => {
-                        let out = exec("ip route".into());
-                        let output = format!("`ip route` responded with {} lines:\n{}", out.len(), out);
-                        ReplaceScreen(Box::new(DialogueBox::new("Wireguard Setup Successful", &output)))
-                    }
-                    Err(it) => {
-                        let output = format!("Error occurred: {}", it);
-                        AddScreen(Box::new(DialogueBox::new("Wireguard Setup Failed", &output)))
-                    }
-                }
-            }
-            KeyCode::Char(it) => {
-                match self.mode {
-                    Mode::RoutePicker => {
-                        if it == ' ' {
-                            self.alternate_selected(state);
-                        }
-                    }
-                    Mode::Settings => {
-                        if self.settings_current == 0 {
-                            self.target_address.push(it);
-                            self.target_addr_cursor.update_key();
-                        }
-                    }
-                }
-                Handled
-            }
-            KeyCode::Backspace => {
-                if self.mode == Mode::Settings && self.settings_current == 0 {
-                    self.target_address.pop();
-                }
-                Handled
-            }
-            KeyCode::Esc => KeyResult::Exited,
-            _ => KeyResult::Passup(key_event),
-        }
-    }
+		let mut screen = self.screen.take().unwrap();
+		screen.on_key(key_event, self, state);
+		let _ = self.screen.insert(screen);
+
+		get_from_queue().unwrap_or(KeyResult::Passup(key_event))
+	}
 }

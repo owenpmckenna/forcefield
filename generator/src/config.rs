@@ -23,7 +23,8 @@ pub struct Config {
     pub gen_wg_priv: String,
     pub citadel_wg_pub: String,
     ///the Option<String> is actually an Option<SocketAddr>
-    pub peers: Vec<(String, (Ipv4Addr, Ipv6Addr), EndpointAddr)>
+    pub peers: Vec<(String, (Ipv4Addr, Ipv6Addr), EndpointAddr)>,
+    pub ws_points: Vec<u16>
 }
 static FILE: &str = "conf.conf";
 impl Config {
@@ -42,7 +43,8 @@ impl Config {
             gen_wg_pub: initial_config.wg_public,
             gen_wg_priv: initial_config.wg_private,
             citadel_wg_pub: cfg_msg.citadel_wg_pub,
-            peers: vec![]
+            peers: vec![],
+            ws_points: vec![]
         }
     }
     pub fn get() -> Option<Self> {

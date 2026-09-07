@@ -1,7 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use std::io::Stdout;
-use std::ops::Range;
+use std::marker::PhantomData;
+use std::ops::{Add, Range, Sub};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use crossterm::event::KeyCode::Right;
+use rsa::pkcs1::pem::detect_base64_line_width;
 use tui::Frame;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Alignment, Rect};
@@ -30,7 +34,7 @@ impl<T> Screen<T> {
 	pub fn render(&mut self, frame: &mut Frame<CrosstermBackend<Stdout>>, layout: Vec<Rect>, owner: &mut T, state: &BackendState) -> Option<()> {
 		if !self.run_yet {
 			self.run_yet = true;
-			self.pane().on_select(owner);
+			self.pane().on_select(owner, state);
 		}
 		if layout.len() != self.panes.len() {
 			return None
@@ -47,8 +51,15 @@ impl<T> Screen<T> {
 		match key_event.code {
 			KeyCode::Tab => {
 				self.pane().on_deselect(owner);
+				//remember old value. selct next pane.
+				//skip if the next pane doesn't want to be selected until a good pane or we get back where we started
+				let orig_sel = self.pane_selected;
 				self.pane_selected = (self.pane_selected + 1) % self.panes.len();
-				self.pane().on_select(owner);
+				while self.pane().skip_selection && self.pane_selected != orig_sel {
+					self.pane_selected = (self.pane_selected + 1) % self.panes.len();
+				}
+
+				self.pane().on_select(owner, backend);
 			}
 		    _ => {
 				self.pane().on_key(key_event, owner, backend);
@@ -59,14 +70,15 @@ impl<T> Screen<T> {
 pub struct Pane<T> {
 	title: String,
 	pub elements: Vec<Box<dyn Element<T>>>,
-	element_selected: usize,
+	pub element_selected: usize,
 	pub render_as_list: bool,
 	pub last_button: bool,
 	pub last_line_separated: bool,
 	///from, to
 	pub enter_redirectors: Vec<(usize, usize)>,
 	pub allow_updown: bool,
-	selected: bool
+	selected: bool,
+	pub skip_selection: bool
 }
 impl<T> Pane<T> {
 	pub fn new(title: &str, elements: Vec<Box<dyn Element<T>>>) -> Self {
@@ -79,12 +91,13 @@ impl<T> Pane<T> {
 			last_line_separated: false,
 			enter_redirectors: vec![],
 			allow_updown: true,
-			selected: false
+			selected: false,
+			skip_selection: false
 		}
 	}
-	fn on_select(&mut self, owner: &mut T) {
+	fn on_select(&mut self, owner: &mut T, state: &BackendState) {
 		self.selected = true;
-		self.element().on_select(owner);
+		self.element().on_select(owner, state);
 	}
 	fn on_deselect(&mut self, owner: &mut T) {
 		self.selected = false;
@@ -128,23 +141,25 @@ impl<T> Pane<T> {
 	fn element(&mut self) -> &mut Box<dyn Element<T>> {
 		&mut self.elements[self.element_selected]
 	}
-	fn select(&mut self, diff: isize, owner: &mut T) {
+	fn select<A>(&mut self, func: A, owner: &mut T, state: &BackendState) where A: Fn(usize, usize) -> usize {
 		if self.elements.len() == 1 {
 			return;
 		}
-		self.elements[self.element_selected].on_deselect(owner);
-		let len = self.elements.len() as isize + diff;
-		self.element_selected = (self.element_selected + len as usize) % self.elements.len();
-		self.elements[self.element_selected].on_select(owner);
+		let len = self.elements.len();
+		let orig = self.element_selected;
+		self.element().on_deselect(owner);
+		self.element_selected = (func(self.element_selected, 1) + len) % len;
+		while !self.element().on_select(owner, state) && self.element_selected != orig {
+			self.element_selected = (func(self.element_selected, 1) + len) % len;
+		}
 	}
 	fn on_key(&mut self, key_event: KeyEvent, owner: &mut T, state: &mut BackendState) {
-		let updown = self.allow_updown as isize & 1;
 		match &key_event.code {
 			KeyCode::Up => {
-				self.select(-1 * updown, owner);
+				self.select(usize::sub, owner, state);
 			},
 			KeyCode::Down => {
-				self.select(1 * updown, owner);
+				self.select(usize::add, owner, state);
 			},
 			KeyCode::Enter => {
 				let elem = self.enter_redirectors.iter().find_map(|(from, to)| {
@@ -163,63 +178,139 @@ impl<T> Pane<T> {
 	}
 }
 pub trait Element<T> {
-	fn on_select(&mut self, _: &mut T) {}
+	fn on_select(&mut self, _: &mut T, _: &BackendState) -> bool {true}
 	fn on_deselect(&mut self, _: &mut T) {}
 	fn on_key(&mut self, key_event: KeyEvent, _: &mut T, _: &mut BackendState) -> bool;
 	fn render<'a: 'b, 'b: 'c, 'c>(&'b mut self, width: u16, _: &'a T, _: &'a BackendState) -> Vec<Span<'c>>;
 }
 type Action<E, T> = Box<dyn FnMut(&mut E, &mut T, &mut BackendState)>;
+pub trait GetText<T> {
+	fn get_text<'a>(&'a self, us: &'a T, state: &'a BackendState) -> Vec<&'a str>;
+}
+pub struct GetTextOptions<T> {
+	options: Vec<String>,
+	ph: PhantomData<T>
+}
+impl<T: 'static> GetTextOptions<T> {
+	pub fn new(options: Vec<String>) -> Box<dyn GetText<T>> {
+		Box::new(Self {options, ph: PhantomData::default() })
+	}
+}
+impl<T> GetText<T> for GetTextOptions<T> {
+	fn get_text<'a>(&'a self, _: &'a T, _: &'a BackendState) -> Vec<&'a str> {
+		self.options.iter().map(|it| it.as_str()).collect()
+	}
+}
+pub struct GetTextFnMut<T> {
+	text: Mutex<Option<Box<dyn for<'a> FnMut(&'a T, &'a BackendState) -> Vec<&'a str>>>>
+}
+impl<T: 'static> GetTextFnMut<T> {
+	pub fn new<A>(a: A) -> Box<dyn GetText<T>> where A: for<'a> FnMut(&'a T, &'a BackendState) -> Vec<&'a str> + 'static {
+		Box::new(Self {text: Mutex::new(Some(Box::new(a)))})
+	}
+}
+impl<T> GetText<T> for GetTextFnMut<T> {
+	fn get_text<'a>(&'a self, us: &'a T, state: &'a BackendState) -> Vec<&'a str> {
+		let mut lock = self.text.lock().unwrap();
+		let mut txt = lock.take().unwrap();
+		let text = txt(us, state);
+		let _ = lock.insert(txt);
+		text
+	}
+}
 pub struct ButtonElement<T> {
-	allow_highlighting: Option<fn(&T) -> bool>,
+	style: Box<dyn FnMut(&T, bool) -> Style>,
+	allow_selection: Option<Box<dyn FnMut(&T, &BackendState) -> bool>>,
 	selected: bool,
 	pub text: String,
 	center: bool,
 	on_click: Option<Action<Self, T>>,
-	pub other_text: Option<Box<dyn for<'a> FnMut(&'a T, &'a BackendState) -> &'a str>>,
-	pub marked_for_removal: bool
+	pub other_text: Option<Box<dyn GetText<T>>>,
+	pub marked_for_removal: bool,
+	pub alternate_selection: Box<dyn GetText<T>>,
+	pub alternate_selected: usize
 }
-impl<T> ButtonElement<T> {
+impl<T: 'static> ButtonElement<T> {
 	pub fn new_<A>(text: &str, center: bool, on_click: A) -> Self where A: FnMut(&mut Self, &mut T, &mut BackendState) + 'static {
-		Self::new(text, Some(|_| true), center, on_click)
+		Self::new(text, Box::new(|_, it| match it {
+			true => {Style::default().fg(Color::LightBlue)}
+			false => {Style::default()}
+		}), center, on_click)
 	}
-	pub fn new<A>(text: &str, allow_highlighting: Option<fn(&T) -> bool>, center: bool, on_click: A) -> Self where A: FnMut(&mut Self, &mut T, &mut BackendState) + 'static {
+	pub fn new<A>(text: &str, style: Box<dyn FnMut(&T, bool) -> Style>, center: bool, on_click: A) -> Self where A: FnMut(&mut Self, &mut T, &mut BackendState) + 'static {
 		Self {
 			selected: false,
 			text: text.to_string(),
-			allow_highlighting,
+			style,
 			center,
 			on_click: Some(Box::new(on_click)),
 			other_text: None,
-			marked_for_removal: false
+			marked_for_removal: false,
+			alternate_selection: GetTextOptions::new(vec![]),
+			alternate_selected: 0,
+			allow_selection: None
 		}
+	}
+	pub fn set_allow_selection<A>(&mut self, a: A) where A: FnMut(&T, &BackendState) -> bool + 'static {
+		self.allow_selection = Some(Box::new(a))
 	}
 }
 impl<T> Element<T> for ButtonElement<T> {
-	fn on_select(&mut self, _: &mut T) {
+	fn on_select(&mut self, t: &mut T, state: &BackendState) -> bool {
+		if let Some(func) = &mut self.allow_selection {
+			if !func(t, state) {
+				return false
+			}
+		}
 		self.selected = true;
+		true
 	}
 	fn on_deselect(&mut self, _: &mut T) {
 		self.selected = false;
 	}
 	fn on_key(&mut self, key_event: KeyEvent, owner: &mut T, state: &mut BackendState) -> bool {
+		let alt_sel = self.alternate_selection.get_text(owner, state).len();
 		if key_event.code == KeyCode::Enter {
 			let mut taken = self.on_click.take().unwrap();
 			taken(self, owner, state);
 			let _ = self.on_click.insert(taken);
+		} else if key_event.code == KeyCode::Left {
+			self.alternate_selected = (self.alternate_selected + alt_sel - 1) % alt_sel;
+		} else if key_event.code == Right {
+			self.alternate_selected = (self.alternate_selected + 1) % alt_sel;
 		}
 		self.marked_for_removal
 	}
 
 	fn render<'a: 'b, 'b: 'c, 'c>(&'b mut self, width: u16, owner: &'a T, state: &'a BackendState) -> Vec<Span<'c>> {
-		let mut style = Style::default();
-		if self.selected && self.allow_highlighting.map(|it| it(owner)).unwrap_or(true) {
-			style = style.fg(Color::LightBlue);
-		}
+		let style = (self.style)(owner, self.selected);
 		let mut vec = if let Some(it) = &mut self.other_text {
-			vec![Span::styled(&self.text, style), Span::styled(it(owner, state), style)]
+			let mut v = vec![Span::styled(&self.text, style)];
+			for i in it.get_text(owner, state) {
+				v.push(Span::styled(i, style))
+			}
+			v
 		} else {
 			vec![Span::styled(&self.text, style)]
 		};
+		if self.selected {
+			let a = " - ";
+			let mut sel_str: Vec<&'b str> = vec![a];
+			for (it, str) in self.alternate_selection.get_text(owner, state).into_iter().enumerate() {
+				let (z, x) = if it == self.alternate_selected {
+					("[", "]")
+				} else {(" ", " ")};
+				sel_str.push(z);
+				sel_str.push(str);
+				sel_str.push(x);
+				sel_str.push(" ");
+			}
+			if sel_str.len() > 1 {
+				sel_str.into_iter().for_each(|it| {
+					vec.push(Span::styled(it, style))
+				})
+			}
+		}
 		if self.center {
 			center_text(width, &mut vec);
 		}
@@ -269,8 +360,9 @@ impl<T> TextInputElement<T> {
 	}
 }
 impl<T> Element<T> for TextInputElement<T> {
-	fn on_select(&mut self, _: &mut T) {
+	fn on_select(&mut self, _: &mut T, _: &BackendState) -> bool {
 		self.selected = true;
+		true
 	}
 	fn on_deselect(&mut self, _: &mut T) {
 		self.selected = false;
@@ -365,7 +457,7 @@ fn optional_span(str: &str, from: usize, to: Option<usize>, style: Style) -> Opt
 fn char_pos(str: &str, at: usize) -> Option<usize> {
 	str.char_indices().nth(at).map(|it| it.0)
 }
-pub trait TextViewer<A> = for<'a> FnMut(&'a A, &'a BackendState) -> &'a str + 'static;
+pub trait TextViewer<T> = for<'a> FnMut(&'a T, &'a BackendState) -> &'a str + 'static;
 pub struct TextView<T> {
 	txt_buffer_view: Vec<Box<dyn TextViewer<T>>>,
 	highlightable: bool,
@@ -383,8 +475,9 @@ impl<T> TextView<T> {//for<'a> FnMut(&'a T, &'a BackendState) -> &'a str + 'stat
 	}
 }
 impl<T> Element<T> for TextView<T> {
-	fn on_select(&mut self, _: &mut T) {
+	fn on_select(&mut self, _: &mut T, _: &BackendState) -> bool {
 		self.selected = self.highlightable;
+		true
 	}
 	fn on_deselect(&mut self, _: &mut T) {
 		self.selected = false;

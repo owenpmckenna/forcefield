@@ -38,7 +38,7 @@ impl Endpoint {
 impl Display for Endpoint {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            PublicEndpoint(ip) => {write!(f, "{}", ip.ip())}
+            PublicEndpoint(ip) => {write!(f, "{}", ip)}
             ViaPeer(it) => {write!(f, "via {}", it)}
             FromPeer(ip, id) => {write!(f, "{} via {}", ip, id.clone().unwrap_or("local network".into()))}
         }
@@ -58,7 +58,9 @@ pub struct Generator {
     pub wg_public_key: String,
     pub description: String,
     #[serde(skip, default)]
-    pub probable_routes: Arc<Mutex<Vec<Route>>>
+    pub probable_routes: Arc<Mutex<Vec<Route>>>,
+    #[serde(default)]
+    pub ws_ports: Vec<u16>
 }
 impl Generator {
     pub fn get_config_key(&self) -> Key {
@@ -110,10 +112,11 @@ impl Generator {
             config_key_bytes: config_key.to_vec(),
             wg_public_key: String::from_utf8(twgc)?,
             description: "".into(),
-            probable_routes: Arc::new(Mutex::new(vec![]))
+            probable_routes: Arc::new(Mutex::new(vec![])),
+            ws_ports: vec![]
         })
     }
-    ///yeah so... pass in Err(id) if you don't want just a route, but a logical next route in a vpn chain
+    ///yeah so... pass in Err(id) if you don't want just a route (eg. internal 10.69.0.x), but a logical next route in a vpn chain (134.62.75.4)
     pub fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<&Endpoint> {
         match connected {
             //we are connected in a chain, and want to find the best way to talk to this generator
@@ -133,42 +136,40 @@ impl Generator {
     fn find_best_endpoint_force_lc(&self, routes: &Vec<Route>, connected: &Vec<String>, last_connected: Option<String>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<&Endpoint> {
         //prefer routes direct from peer, they're fastest and simplest
         if let Some(ep) = self.endpoints.iter()
-            .find_map(|it| if let FromPeer(ip, id) = it && id.eq(&last_connected) {
-                if last_connected == None {//if we haven't done any connections yet, check if we're on the right network
-                    if has_route_for_ip_no_lookup(ip.ip(), routes) {
-                        Some(it)
-                    } else {None}
+            .find(|it| if let FromPeer(ip, id) = it && id.eq(&last_connected) {
+                if last_connected.is_none() {//if we haven't done any connections yet, check if we're on the right network
+                    has_route_for_ip_no_lookup(ip.ip(), routes)
                 } else {
-                    Some(it)
+                    true
                 }
-            } else {None}) {
+            } else {false}) {
             return Some(ep);
         }
 
         for connected in connected {
             //ok, so if there's a like, mid level generator in the route with a peer connection to
             //our target, use it, it'll be faster than the public endpoint
-            if let Some(end) =  self.endpoints.iter().find_map(|it|
-                if let ViaPeer(id) = it && id.eq(connected) {Some(it)} else { None }
+            if let Some(end) =  self.endpoints.iter().find(|it|
+                if let ViaPeer(id) = it && id.eq(connected) {true} else { false }
             ) {
                 return Some(end);
             }
         }
 
         if let Some((ep, _)) = self.endpoints.iter()
-            .filter_map(|it| {if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None}})
-            .find(|it| {it.1.is_ipv6()}) {
+            .filter_map(|it| if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None})
+            .find(|it| it.1.is_ipv4()){
             if let Some(pub_ip) = pub_ip {
-                if pub_ip.0.is_some() {
+                if pub_ip.1.is_some() {
                     return Some(ep)
                 }
             } else {return Some(ep)}
         }
         if let Some((ep, _)) = self.endpoints.iter()
-            .filter_map(|it| if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None})
-            .find(|it| it.1.is_ipv4()){
+            .filter_map(|it| {if let PublicEndpoint(ad) = &it {Some((it, ad))} else {None}})
+            .find(|it| {it.1.is_ipv6()}) {
             if let Some(pub_ip) = pub_ip {
-                if pub_ip.1.is_some() {
+                if pub_ip.0.is_some() {
                     return Some(ep)
                 }
             } else {return Some(ep)}

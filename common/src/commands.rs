@@ -12,6 +12,8 @@ pub enum Command {
     FireUDPWakeup(SocketAddr),
     FireUDPShutdown(SocketAddr),
     GetIPv6Addr,
+    AddWs(u16),
+    DelWs(u16),
     RunCommand(String),
     Kill,
 }
@@ -21,5 +23,6 @@ pub enum Response {
     Routes(Vec<Route>),
     GetIp(Result<String, String>),
     CommandResponse(String),
-    Ipv6Addr(Option<Ipv6Addr>)
+    Ipv6Addr(Option<Ipv6Addr>),
+    WsOk(Result<(), String>)
 }

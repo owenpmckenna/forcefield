@@ -1,56 +1,67 @@
+#![feature(unix_send_signal)]
 pub mod init_config;
 pub mod config;
 mod on_wakeup;
 mod receive_connections;
 
-use common::cmd::exec;
-use common::commands::{Command, Response};
-use common::errors::FFError::ICMPPacketError;
-use common::errors::{FFError, FFResult};
-use common::setup_handshake::{read_encrypted_data, read_packet, write_encrypted_data, write_packet, ConfigMessage};
-use common::wireguard::{get_default_route_v4, get_default_route_v6, get_pub_ipv6_addr, get_routes, Route, Wireguard, WireguardPeer, EndpointAddr};
 use crate::config::Config;
 use crate::init_config::InitialConfig;
 use crate::on_wakeup::{do_wakeup, ping};
-use crate::receive_connections::{prep_receive_connections, prep_receive_udp_connection};
+use crate::receive_connections::prep_receive_connections;
 use chacha20poly1305::aead::generic_array::GenericArray;
 use chacha20poly1305::aead::{AeadMut, Payload};
 use chacha20poly1305::consts::U24;
 use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
+use common::cmd::exec;
+use common::commands::{Command, Response};
+use common::errors::{FFError, FFResult};
+use common::setup_handshake::{ConfigMessage, read_encrypted_data, read_packet, write_encrypted_data, write_packet};
+use common::wireguard::EndpointAddr::Passive;
+use common::wireguard::{get_default_route_v4, get_default_route_v6, get_pub_ipv6_addr, get_routes, try_extract_wstunnel, EndpointAddr, Route, Wireguard, WireguardPeer};
 use crossbeam_channel::select;
-use icmp_socket::packet::WithEchoRequest;
-use icmp_socket::{IcmpSocket, IcmpSocket4, IcmpSocket6, Icmpv4Packet, Icmpv6Packet};
 use ipnet::IpNet;
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
+use polling::{Event, Events, Poller};
+use rand::RngExt;
 use rsa::pkcs8::DecodePublicKey;
 use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
 use std::collections::HashMap;
 use std::error::Error;
-use std::io::Read;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::os::fd::{AsFd, AsRawFd};
-use std::process::{exit, Stdio, Child};
+use std::fs::{File, Permissions};
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener, TcpStream, UdpSocket};
+use std::os::fd::AsFd;
+use std::process::{Child, Stdio, exit};
 use std::str::FromStr;
-use std::sync::atomic::AtomicU16;
-use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{LazyLock, Mutex, OnceLock};
-use std::{io, thread};
-use std::thread::{sleep, Thread};
+use std::thread::sleep;
 use std::time::Duration;
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
-use polling::{Event, Events, Poller};
-use rand::RngExt;
-use common::wireguard::EndpointAddr::Passive;
+use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ChildExt;
+use nix::libc;
 
 static PUB_KEY_TEXT: &str = include_str!("../../key/public.pem");
 fn main() {
-    if let Some(conf) = Config::get()  {
-        run(conf); return;
+    let _wst_loc = match try_extract_wstunnel() {
+        Ok(it) => {
+            println!("extracted wstunnel: {}", it);
+            Some(it)
+        }
+        Err(it) => {
+            println!("failed to extract wstunnel: {}", it);
+            None
+        }
+    };
+    if let Some(conf) = Config::get() {
+        run(conf);
+        return;
     }
     let config = InitialConfig::get();
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port)).unwrap();
     let running = true;
     let citadel_key = RsaPublicKey::from_public_key_pem(PUB_KEY_TEXT).unwrap();
-    println!("encrypting keys... lengths {} and {}", config.config_key_bytes.len(), config.wg_public.as_bytes().len());
+    println!("encrypting keys... lengths {} and {}", config.config_key_bytes.len(), config.wg_public.len());
     let our_wg_key = citadel_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt,
                                       config.wg_public.as_bytes()).unwrap();
     let our_key = citadel_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt,
@@ -146,8 +157,9 @@ fn run(mut config: Config) {
     for i in config.get_peers() {
         routes.insert(i.0.clone(), add_to_wireguard(&mut config, &mut wg, &i));
     }
-    setup_ws(80, config.port);
-    setup_ws(config.port, config.port);
+    for i in &config.ws_points {
+        setup_ws(*i, config.port);
+    }
     let mut cipher = XChaCha20Poly1305::new(config.get_config_key());
     let listener_data = prep_receive_connections(config.config_port);
     loop {
@@ -245,6 +257,35 @@ fn do_loop(config: &mut Config, mut stream: TcpStream, cipher: &mut XChaCha20Pol
             };
             let out = serde_json::to_vec(&Response::CommandResponse(out))?;
             write_encrypted_data(&mut stream, cipher, &out)?;
+        },
+        Command::AddWs(http_port) => {
+            let out = if config.ws_points.iter().position(|it| *it == http_port).is_some() {
+                Err("Already Exists".to_string())
+            } else {
+                let success = setup_ws(http_port, config.port);
+                config.ws_points.push(http_port);
+                config.save();
+                success
+            };
+            let data = serde_json::to_vec(&Response::WsOk(out))?;
+            write_encrypted_data(&mut stream, cipher, &data)?;
+        },
+        Command::DelWs(http_port) => {
+            if let Some(pos) = config.ws_points.iter().position(|it| *it == http_port) {
+                config.ws_points.remove(pos);
+                config.save();
+            }
+            let mut lock = CHILDREN.lock().unwrap();
+            if let Some(pos) = lock.iter().position(|(it, _)| *it == http_port) {
+                let (_, mut child) = lock.remove(pos);
+                //try to kill gracefully
+                let _ = child.send_signal(libc::SIGINT);
+                sleep(Duration::from_millis(250));
+                //we kinda don't care if it died gracefully but worth a shot ig
+                let _ = child.kill();
+            }
+            let data = serde_json::to_vec(&Response::WsOk(Ok(())))?;
+            write_encrypted_data(&mut stream, cipher, &data)?;
         }
         Command::Kill => {
             println!("shutdown");
@@ -314,17 +355,29 @@ pub fn run_command(cmd: String) -> Result<String, Box<dyn Error>> {
     Ok(String::from_utf8_lossy(&total).to_string())
 }
 
-static CHILDREN: LazyLock<Mutex<Vec<Child>>> = LazyLock::new(|| Mutex::new(vec![]));
-pub fn setup_ws(http_port: u16, wg_port: u16) {
+static CHILDREN: LazyLock<Mutex<Vec<(u16, Child)>>> = LazyLock::new(|| Mutex::new(vec![]));
+pub fn setup_ws(http_port: u16, wg_port: u16) -> Result<(), String> {
+    println!("setting up wstunnel http {} wg {}", http_port, wg_port);
     //wstunnel server --restrict-to localhost:51820 wss://[::]:443
-    let proc = std::process::Command::new("wstunnel")
+    let mut proc = std::process::Command::new("./wstunnel")
         .args([
             "server",
             "--restrict-to",
             &format!("localhost:{}", wg_port),
             &format!("ws://[::]:{}", http_port)
         ])
+        //.stdout(Stdio::piped())
+        //.stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    CHILDREN.lock().unwrap().push(proc)
+    sleep(Duration::from_millis(250));
+    if let Some(es) = proc.try_wait().map_err(|it:_| it.to_string())? {
+        let mut std = String::new();
+        proc.stdout.take().unwrap().read_to_string(&mut std).map_err(|it:_|it.to_string())?;
+        let mut err = String::new();
+        proc.stderr.take().unwrap().read_to_string(&mut err).map_err(|it:_|it.to_string())?;
+        return Err(format!("Error (code {}):\nStdout:\n{}\n\n\nStderr:\n{}", es.code().unwrap(), std, err))
+    }
+    CHILDREN.lock().unwrap().push((http_port, proc));
+    Ok(())
 }

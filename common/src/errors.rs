@@ -13,6 +13,7 @@ pub enum FFError {
     BadGetIp(String),
     GenShutdownWrong(String),
     ICMPPacketError(IcmpPacketBuildError),
+    WSError(String),
     NoRealInternetConnection
 }
 

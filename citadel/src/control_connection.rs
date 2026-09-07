@@ -88,6 +88,25 @@ impl ControlConnection {
         }
     }
 
+    pub fn send_ws(&mut self, port: u16, add: bool) -> FFResult<String> {
+        let ip0 = if add {Command::AddWs(port)} else {Command::DelWs(port)};
+        let ip = serde_json::to_string(&ip0)?;
+        self.write_encrypted_data(ip.as_bytes())?;
+        let resp = self.read_encrypted_data()?;
+        let hb_resp: Response = serde_json::from_str(&String::from_utf8(resp)?)?;
+        match hb_resp {
+            Response::WsOk(it) => {
+                Ok(match it {
+                    Ok(_) => { "Success!".to_string() }
+                    Err(it) => {it}
+                })
+            }
+            _ => {
+                Err(Box::new(WrongResponseType))
+            }
+        }
+    }
+
     pub fn send_get_routes(&mut self) -> FFResult<Vec<Route>> {
         let r0 = Command::GetRoutes;
         self.write_read_routes(r0)

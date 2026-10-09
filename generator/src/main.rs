@@ -41,7 +41,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ChildExt;
 use nix::libc;
 
-static PUB_KEY_TEXT: &str = include_str!("../../key/public.pem");
+static DEF_KEY: &str = include_str!("../def_key/public.pem");
 fn main() {
     let _wst_loc = match try_extract_wstunnel() {
         Ok(it) => {
@@ -60,7 +60,7 @@ fn main() {
     let config = InitialConfig::get();
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port)).unwrap();
     let running = true;
-    let citadel_key = RsaPublicKey::from_public_key_pem(PUB_KEY_TEXT).unwrap();
+    let citadel_key = RsaPublicKey::from_public_key_pem(DEF_KEY).unwrap();
     println!("encrypting keys... lengths {} and {}", config.config_key_bytes.len(), config.wg_public.len());
     let our_wg_key = citadel_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt,
                                       config.wg_public.as_bytes()).unwrap();
@@ -78,6 +78,7 @@ fn main() {
                 return;
             }
             Err(it) => {
+                println!("{}", DEF_KEY);
                 println!("got error waiting for settings: {}", it);
             }
         }

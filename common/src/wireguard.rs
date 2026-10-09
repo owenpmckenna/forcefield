@@ -2,7 +2,7 @@ use std::error::Error;
 use crate::cmd::exec;
 use crate::ip::Port;
 use std::fmt::{Debug, Display, Formatter};
-use std::fs;
+use std::{env, fs};
 use std::fs::{File, Permissions};
 use std::io::Write;
 //Port is type alias for u16
@@ -359,7 +359,7 @@ fn do_wstunnelman() {
     });
 }*/
 
-static WSTUNNEL_DATA: &[u8] = include_bytes!("/home/owen/Downloads/wstunnel/target/release/wstunnel");
+static WSTUNNEL_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wstunnel"));
 pub fn try_extract_wstunnel() -> Result<&'static str, Box<dyn Error>> {
     let mut wst = File::create("./wstunnel")?;
     let mut perms: Permissions = wst.metadata()?.permissions();

@@ -23,3 +23,8 @@ icmp-socket = "0.2.0"
 opt-level = 2
 lto = "thin"
 strip = true
+
+[build-dependencies]
+reqwest = { version = "0.13.5", features = ["blocking"] }
+tar = "0.4.46"
+flate2 = "1.1.10"

@@ -24,3 +24,6 @@ polling = "3.11.0"
 opt-level = 2
 lto = "thin"
 strip = true
+
+[build-dependencies]
+rsa = "0.10.0-rc.18"

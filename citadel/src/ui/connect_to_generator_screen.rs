@@ -11,7 +11,7 @@ use tui::Frame;
 use tui::backend::CrosstermBackend;
 
 pub struct ConnectToGeneratorScreen {
-    entered_ip: String,
+    pub entered_ip: String,
     screen: Option<Screen<Self>>,
 }
 impl ConnectToGeneratorScreen {

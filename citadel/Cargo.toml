@@ -16,7 +16,9 @@ ipnet = { version = "2.12.0", features = ["default", "serde"] }
 openport = { version = "0.3.0", features = ["default", "rand"] }
 tui = "0.19"
 crossterm = "0.25"
+generator = { path = "../generator" }
 common = { path = "../common" }
+clap = { version = "4.6.7", features = ["derive"] }
 #wstunnel = { git = "https://github.com/owenpmckenna/wstunnel", package = "wstunnel" }
 
 [profile.release]

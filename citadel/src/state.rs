@@ -3,16 +3,19 @@ use crate::handshaker::{Endpoint, Generator};
 use common::cmd::exec;
 use common::errors::{FFError, FFResult};
 use common::wireguard::{generate_wireguard_keys, get_default_route_v4, get_default_route_v6, get_routes, Route, Wireguard, WireguardPeer, WireguardState, EndpointAddr};
-use ipnet::{IpNet, Ipv6Net};
+use ipnet::{AddrParseError, IpNet, Ipv6Net};
 use openport::pick_random_unused_port;
 use rand::distr::Alphanumeric;
-use rand::RngExt;
+use rand::{rng, RngExt};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 use std::{fs};
 use std::io::SeekFrom::End;
 use crossbeam_channel::{Receiver, Sender};
+use rsa::pkcs1::LineEnding;
+use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey};
+use rsa::RsaPrivateKey;
 use common::ip::Port;
 use crate::ui::ui_main::KeyResult;
 
@@ -27,7 +30,8 @@ pub struct BackendState {
     ///has the same length as "current_wg_ids", each Endpoint represents how we reach the corresponding generator
     pub endpoints_used: Vec<(Endpoint, Option<Port>)>,
     #[serde(skip, default)]
-    pub channels: Option<(Sender<KeyResult>, Receiver<KeyResult>)>
+    pub channels: Option<(Sender<KeyResult>, Receiver<KeyResult>)>,
+    pub rsa_priv: String
 }
 static FILE: &str = "conf.conf";
 impl BackendState {
@@ -38,6 +42,7 @@ impl BackendState {
             }
             Err(_) => {
                 let (wg_private, wg_public) = generate_wireguard_keys();
+                let rsa_priv = RsaPrivateKey::new(&mut rng(), 4096).unwrap().to_pkcs8_pem(LineEnding::CRLF).unwrap().to_string();
                 let data = Self {
                     our_wg_pub: wg_public,
                     our_wg_priv: wg_private,
@@ -45,7 +50,8 @@ impl BackendState {
                     current_wg_setup: None,
                     current_wg_ids: vec![],
                     endpoints_used: vec![],
-                    channels: None
+                    channels: None,
+                    rsa_priv
                 };
                 data.save();
                 data
@@ -60,6 +66,9 @@ impl BackendState {
         fs::remove_file(FILE).unwrap();
     }
 
+    pub fn get_rsa_priv(&self) -> RsaPrivateKey {
+        RsaPrivateKey::from_pkcs8_pem(&self.rsa_priv).unwrap()
+    }
     pub fn next_id(&self) -> FFResult<(Ipv4Addr, Ipv6Addr, String)> {
         let ipv6_range: Ipv6Net = "fd80:51e8:5d8e::/48".parse().unwrap();
         //skips ::0 and ::1
@@ -131,7 +140,12 @@ impl BackendState {
         if list.is_empty() {
             return Ok(());
         }
-		let addresses: Vec<IpNet> = addresses.split(",").map(IpNet::from_str).map(Result::unwrap).collect();
+        
+        let mut addr_len = 0;
+		let addresses: Vec<IpNet> = addresses.split(",").map(IpNet::from_str).filter_map(|it| {addr_len += 1; it.ok()}).collect();
+        if addr_len != addresses.len() && addresses.len() != 0 {
+            return Err(FFError::BadCIDR.into())
+        }
 
         let mut routes_to_add = vec![];
         let generators: Vec<&Generator> = list.iter().map(|it| &self.known_generators[it.0]).collect();
@@ -216,6 +230,14 @@ impl BackendState {
         }
         let l_id = list.len() - 1;
         //wireguard now knows how to reach each wireguard server, now add the default route to go to the last one.
+        if addresses.is_empty() {
+            if let Some(def) = default_v4.as_ref() {
+                routes_to_add.push(def.clone());
+            }
+            if let Some(def) = default_v6.as_ref() {
+                routes_to_add.push(def.clone());
+            }
+        }
         for address in addresses {
             if let IpNet::V4(_) = address {
                 routes_to_add.push(Route::new_full(

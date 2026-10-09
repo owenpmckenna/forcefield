@@ -10,6 +10,7 @@ use crossterm::event::KeyEvent;
 use std::io::Stdout;
 use tui::Frame;
 use tui::backend::CrosstermBackend;
+use crate::ui::export_control::ExportControl;
 
 pub struct MainOptionsScreen {
     screen: Option<Screen<MainOptionsScreen>>,
@@ -33,6 +34,9 @@ impl MainOptionsScreen {
                 } else {
                     add_screen(RouteSetupScreen::new(state))
                 }
+            }),
+            ButtonElement::new_("Export/Upload Generator", false, move |_, _, state| {
+                add_screen(ExportControl::new())
             }),
             ButtonElement::new_("Exit", false, move |_, _, _| {
                 exit_screen()

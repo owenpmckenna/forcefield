@@ -9,13 +9,14 @@ use rsa::pkcs8::DecodePrivateKey;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::process::exit;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use rsa::pkcs1::{EncodeRsaPublicKey, LineEnding};
 use tui::text::Spans;
 use crate::handshaker::Endpoint::{FromPeer, PublicEndpoint, ViaPeer};
 use common::wireguard::{has_route_for_ip_no_lookup, Route};
 
-static PRIV_KEY_TEXT: &str = include_str!("../../key/private_pkcs1.pem");
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub enum Endpoint {
     PublicEndpoint(SocketAddr),
@@ -71,7 +72,9 @@ impl Generator {
         XChaCha20Poly1305::new(key)
     }
     pub fn connect_to_generator(ip: String, state: &mut BackendState) -> FFResult<Generator> {
-        let our_private = RsaPrivateKey::from_pkcs8_pem(PRIV_KEY_TEXT)?;
+        let our_private = state.get_rsa_priv();
+        //println!("{:?}", our_private.as_public_key().to_pkcs1_pem(LineEnding::LF));
+        //exit(0);
         let ip_addr: SocketAddr = ip.parse()?;
         let mut conn = TcpStream::connect_timeout(
             &ip_addr,

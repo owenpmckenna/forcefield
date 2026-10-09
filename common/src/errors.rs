@@ -14,7 +14,10 @@ pub enum FFError {
     GenShutdownWrong(String),
     ICMPPacketError(IcmpPacketBuildError),
     WSError(String),
-    NoRealInternetConnection
+    NoRealInternetConnection,
+    BadCIDR,
+    UploadFailed(String),
+    BadFileName(String),
 }
 
 impl Display for FFError {

@@ -8,7 +8,7 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use std::collections::VecDeque;
 use std::io;
 use std::io::{Stdout, Write};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tui::backend::{Backend, CrosstermBackend};
 use tui::{Frame, Terminal};
@@ -18,12 +18,14 @@ pub enum KeyResult {
     Exited,
     Passup(KeyEvent),
     AddScreen(Box<dyn RenderWidget>),
-    ReplaceScreen(Box<dyn RenderWidget>)
+    ReplaceScreen(Box<dyn RenderWidget>),
+    ReplaceThenAddScreenBefore(Box<dyn RenderWidget>, Box<dyn RenderWidget>)
 }
 pub trait RenderWidget {
     fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState);
     fn handle_input(&mut self, key_event: KeyEvent, state: &mut BackendState) -> KeyResult;
 }
+pub static TERMINAL: LazyLock<Mutex<Option<Terminal<CrosstermBackend<Stdout>>>>> = LazyLock::new(|| Mutex::new(None));
 pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
     state.channels = Some(unbounded());
     enable_raw_mode()?;
@@ -31,16 +33,22 @@ pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
+    let _ = TERMINAL.lock()?.insert(terminal);
     let mut running = true;
     let mut stack: Vec<Box<dyn RenderWidget>> = vec![];
     let mos = MainOptionsScreen::new();
     stack.push(Box::new(mos));
     while running {
-        terminal.draw(|rect| {
-            if let Some(last) = stack.last_mut() {
-                last.render(rect, state);
-            } else {running = false;}
-        })?;
+        {
+            let mut lock = TERMINAL.lock()?;
+            let mut terminal = lock.take().unwrap();
+            terminal.draw(|rect| {
+                if let Some(last) = stack.last_mut() {
+                    last.render(rect, state);
+                } else { running = false; }
+            })?;
+            let _ = lock.insert(terminal);
+        }
         if running && event::poll(Duration::from_millis(500)).expect("poll works") {
             if let Event::Key(key) = event::read().expect("can read events") {
                 if key.code == KeyCode::Esc {
@@ -53,7 +61,8 @@ pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
                         KeyResult::Exited => {stack.pop();}
                         KeyResult::Passup(_) => {/*ignore for now haha*/},
                         KeyResult::AddScreen(it) => {stack.push(it);},
-                        KeyResult::ReplaceScreen(it) => {stack.pop(); stack.push(it);}
+                        KeyResult::ReplaceScreen(it) => {stack.pop(); stack.push(it);},
+                        KeyResult::ReplaceThenAddScreenBefore(a, b) => {stack.pop(); stack.push(a); stack.push(b);}
                     }
                 }
             }
@@ -61,6 +70,8 @@ pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
     }
     state.save();
 
+    let mut lock = TERMINAL.lock()?;
+    let mut terminal = lock.take().unwrap();
     terminal.backend_mut().clear()?;
     terminal.backend_mut().write_all("\r\n".as_bytes())?;
     disable_raw_mode()?;
@@ -88,4 +99,7 @@ pub fn add_screen<T>(rw: T) where T: RenderWidget + 'static {
 }
 pub fn replace_screen<T>(rw: T) where T: RenderWidget + 'static {
     put_in_queue(KeyResult::ReplaceScreen(Box::new(rw)))
+}
+pub fn replace_then_add_screen_before<A>(rw: Box<dyn RenderWidget>, ad: A) where A: RenderWidget + 'static {
+    put_in_queue(KeyResult::ReplaceThenAddScreenBefore(rw, Box::new(ad)))
 }

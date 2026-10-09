@@ -44,6 +44,9 @@ impl ControlConnectionScreen {
                     return Some(address)
                 }
             }
+            if state.current_wg_ids.contains(&generator.id) {
+                return Some(address)
+            }
             None
         } else {None}
     }

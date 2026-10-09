@@ -3,9 +3,10 @@ use std::io::Stdout;
 use std::marker::PhantomData;
 use std::ops::{Add, Range, Sub};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crossterm::event::KeyCode::Right;
 use rsa::pkcs1::pem::detect_base64_line_width;
+use serde::forward_to_deserialize_any;
 use tui::Frame;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Alignment, Rect};
@@ -78,7 +79,9 @@ pub struct Pane<T> {
 	pub enter_redirectors: Vec<(usize, usize)>,
 	pub allow_updown: bool,
 	selected: bool,
-	pub skip_selection: bool
+	pub skip_selection: bool,
+	pub always_highlight: bool,
+	first: bool,
 }
 impl<T> Pane<T> {
 	pub fn new(title: &str, elements: Vec<Box<dyn Element<T>>>) -> Self {
@@ -92,16 +95,23 @@ impl<T> Pane<T> {
 			enter_redirectors: vec![],
 			allow_updown: true,
 			selected: false,
-			skip_selection: false
+			skip_selection: false,
+			always_highlight: false,
+			first: false
 		}
 	}
 	fn on_select(&mut self, owner: &mut T, state: &BackendState) {
 		self.selected = true;
-		self.element().on_select(owner, state);
+		if !self.always_highlight || self.first {
+			self.element().on_select(owner, state);
+		}
+		self.first = false;
 	}
 	fn on_deselect(&mut self, owner: &mut T) {
 		self.selected = false;
-		self.element().on_deselect(owner);
+		if !self.always_highlight {
+			self.element().on_deselect(owner);
+		}
 	}
 	fn render<'a: 'b, 'b>(&'b mut self, frame: &mut Frame<CrosstermBackend<Stdout>>, layout: Rect, top_left: bool, owner: &'a mut T, state: &BackendState) {
 		let width = if self.render_as_list {layout.width - 2} else {layout.width};
@@ -112,7 +122,7 @@ impl<T> Pane<T> {
 		if self.render_as_list {
 			out.iter_mut().enumerate().for_each(|(i, it)| {
 				//if it's selected and not the button of the list
-				let txt = if self.element_selected == i && !(self.last_button && i == elements_len - 1) && self.selected {
+				let txt = if self.element_selected == i && !(self.last_button && i == elements_len - 1) && (self.selected || self.always_highlight) {
 					"> "
 				} else {"  "};
 				it.0.insert(0, Span::raw(txt));
@@ -333,19 +343,23 @@ pub struct TextInputElement<T> {
 	cursor: usize,
 	pub cursor_flash_rate: u128,
 	selected: bool,
-	pub on_enter: Option<Box<dyn FnMut(&mut T, &mut BackendState)>>
+	pub on_enter: Option<Box<dyn FnMut(&mut T, &mut BackendState)>>,
+	last_selected: SystemTime,
+	run: bool
 }
 impl<T> TextInputElement<T> {
 	pub fn new<A, B>(title: &str, txt_buffer: A, txt_buffer_view: B) -> Self where A: for<'a> FnMut(&'a mut T, &'a mut BackendState) -> &'a mut String + 'static, 
 																				   B: for<'a> FnMut(&'a T, &'a BackendState) -> &'a str + 'static{
 		Self {
 			title: title.to_string(),
+			cursor: 0,
 			txt_buffer: Box::new(txt_buffer),
 			txt_buffer_view: Box::new(txt_buffer_view),
-			cursor: 0,
 			cursor_flash_rate: 1000,
 			selected: false,
-			on_enter: None
+			on_enter: None,
+			last_selected: SystemTime::now(),
+			run: false
 		}
 	}
 	fn get_indexes(txt: &String, pos: usize) -> Option<Range<usize>> {
@@ -360,8 +374,13 @@ impl<T> TextInputElement<T> {
 	}
 }
 impl<T> Element<T> for TextInputElement<T> {
-	fn on_select(&mut self, _: &mut T, _: &BackendState) -> bool {
+	fn on_select(&mut self, t: &mut T, state: &BackendState) -> bool {
+		if !self.run {
+			self.cursor = (self.txt_buffer_view)(t, state).chars().count();
+			self.run = true;
+		}
 		self.selected = true;
+		self.last_selected = SystemTime::now();
 		true
 	}
 	fn on_deselect(&mut self, _: &mut T) {
@@ -389,7 +408,7 @@ impl<T> Element<T> for TextInputElement<T> {
 			KeyCode::Left => {
 				self.cursor = self.cursor.saturating_sub(1);
 			},
-			KeyCode::Right => {
+			Right => {
 				self.cursor = (self.cursor + 1).min(txt.chars().count())
 			},
 			KeyCode::Enter => {
@@ -406,7 +425,7 @@ impl<T> Element<T> for TextInputElement<T> {
 		let text = (self.txt_buffer_view)(owner, state);
 		let txt_len = text.chars().count();
 		let def_style = Style::default();
-		let epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_millis();
+		let epoch = SystemTime::now().duration_since(self.last_selected).unwrap().subsec_millis();
 		let cursor = if epoch > 500 {
 			Style::default().fg(Color::Black).bg(Color::White)
 		} else {
@@ -418,7 +437,7 @@ impl<T> Element<T> for TextInputElement<T> {
 			[
 				Span::styled(&self.title, def_style),
 				Span::styled(text, def_style),
-				Span::styled(if epoch > 500 {"█"} else {" "}, def_style)
+				Span::styled(if epoch < 500 {"█"} else {" "}, def_style)
 			].into_iter().collect()
 		} else if self.cursor == txt_len - 1 {
 			[
@@ -485,7 +504,10 @@ impl<T> Element<T> for TextView<T> {
 	fn on_key(&mut self, _: KeyEvent, _: &mut T, _: &mut BackendState) -> bool {false}
 
 	fn render<'a: 'b, 'b: 'c, 'c>(&'b mut self, width: u16, owner: &'a T, state: &'a BackendState) -> Vec<Span<'c>> {
-		self.txt_buffer_view.iter_mut().map(|it| Span::styled(it(owner, state), Style::default())).collect()
+		let style = if self.selected {
+			Style::default().fg(Color::LightBlue)
+		} else {Style::default()};
+		self.txt_buffer_view.iter_mut().map(|it| Span::styled(it(owner, state), style)).collect()
 	}
 }
 #[macro_export] macro_rules! bvec {

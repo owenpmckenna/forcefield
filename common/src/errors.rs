@@ -8,6 +8,7 @@ pub enum FFError {
     OutOfIds,
     CipherError(aead::Error),
     NoGeneratorFoundError(String),
+    BadGeneratorId,
     WrongResponseType,
     WrongHeartbeat,
     BadGetIp(String),

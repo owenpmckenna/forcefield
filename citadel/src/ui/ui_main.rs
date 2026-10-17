@@ -49,7 +49,7 @@ pub fn ui_main(state: &mut BackendState) -> FFResult<()> {
             })?;
             let _ = lock.insert(terminal);
         }
-        if running && event::poll(Duration::from_millis(500)).expect("poll works") {
+        if running && event::poll(Duration::from_millis(25)).expect("poll works") {
             if let Event::Key(key) = event::read().expect("can read events") {
                 if key.code == KeyCode::Esc {
                     stack.pop();

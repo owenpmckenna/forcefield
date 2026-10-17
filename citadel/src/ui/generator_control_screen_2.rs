@@ -168,7 +168,7 @@ impl GeneratorControlScreen2 {
 	pub(crate) fn new(gen_id: String, connection: Option<ControlConnection>, state: &mut BackendState) -> Self {
 		let gen_id = state.get_index_by_id(&gen_id).unwrap();
 		let configs: Vec<Box<dyn Element<Self>>> = bvec![
-			TextView::new(|_a: _, _b: _| "id: ", true).add_new(|a: &Self, b: &BackendState| &a.get_gen(b).id),
+			TextView::new(true).add_new(|_, _| "id:").add_new(|a: &Self, b: &BackendState| &a.get_gen(b).id),
 			TextInputElement::new("desc: ", |a: &mut Self, b: _| &mut a.get_gen_mut(b).description, |a: &Self, b: _| &a.get_gen(b).description)
 		];
 		let configure_pane = Pane::new("Configure Generator", configs);

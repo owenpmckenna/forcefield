@@ -1,6 +1,7 @@
 #![feature(ip)]
 #![feature(fn_traits)]
 #![feature(trait_alias)]
+#![feature(try_blocks)]
 
 pub mod state;
 pub mod handshaker;

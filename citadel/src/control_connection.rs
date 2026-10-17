@@ -1,6 +1,6 @@
 use crate::state::BackendState;
 use common::commands::{Command, Response};
-use common::errors::FFError::{BadGetIp, GenShutdownWrong, NoGeneratorFoundError, WrongHeartbeat, WrongResponseType};
+use common::errors::FFError::{BadGeneratorId, BadGetIp, GenShutdownWrong, NoGeneratorFoundError, WrongHeartbeat, WrongResponseType};
 use common::errors::{FFError, FFResult};
 use common::setup_handshake::{read_encrypted_data, read_packet, write_encrypted_data};
 use chacha20poly1305::XChaCha20Poly1305;
@@ -16,6 +16,24 @@ pub struct ControlConnection {
     cipher: XChaCha20Poly1305
 }
 impl ControlConnection {
+    pub fn connect_assume_id(addr: SocketAddr, aid: &str, cipher: XChaCha20Poly1305) -> FFResult<ControlConnection> {
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::new(5, 0))?;
+        stream.set_read_timeout(Some(Duration::new(5, 0)))?;
+        stream.set_write_timeout(Some(Duration::new(5, 0)))?;
+
+        let bytes = read_packet(&mut stream)?;
+        let id = String::from_utf8(bytes)?;
+        if !id.eq(&aid) {
+            return Err(Box::new(BadGeneratorId))
+        }
+        let mut conn = ControlConnection {
+            server_id: id,
+            stream,
+            cipher,
+        };
+        conn.send_heartbeat()?;
+        Ok(conn)
+    }
     pub fn connect(addr: SocketAddr, state: &BackendState) -> FFResult<ControlConnection> {
         let mut stream = TcpStream::connect_timeout(&addr, Duration::new(5, 0))?;
         stream.set_read_timeout(Some(Duration::new(5, 0)))?;

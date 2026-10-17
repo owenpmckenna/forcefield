@@ -1,19 +1,18 @@
+use crate::state::BackendState;
+use crossterm::event::KeyCode::Right;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::io::Stdout;
 use std::marker::PhantomData;
 use std::ops::{Add, Range, Sub};
 use std::sync::Mutex;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use crossterm::event::KeyCode::Right;
-use rsa::pkcs1::pem::detect_base64_line_width;
-use serde::forward_to_deserialize_any;
+use std::time::SystemTime;
 use tui::Frame;
 use tui::backend::CrosstermBackend;
 use tui::layout::{Alignment, Rect};
 use tui::style::{Color, Style};
 use tui::text::{Span, Spans};
 use tui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
-use crate::state::BackendState;
+use crate::ui_utils::screen::TextData::{Data, Viewer};
 
 ///This is a relatively simple tui setup that provides support for what I need: buttons, text input, text, and multiple panes.
 pub struct Screen<T> {
@@ -477,19 +476,36 @@ fn char_pos(str: &str, at: usize) -> Option<usize> {
 	str.char_indices().nth(at).map(|it| it.0)
 }
 pub trait TextViewer<T> = for<'a> FnMut(&'a T, &'a BackendState) -> &'a str + 'static;
+pub enum TextData<T> {
+	Viewer(Box<dyn TextViewer<T>>),
+	Data(String)
+}
+
 pub struct TextView<T> {
-	txt_buffer_view: Vec<Box<dyn TextViewer<T>>>,
+	txt_buffer_view: Vec<TextData<T>>,
 	highlightable: bool,
 	selected: bool
 }
 impl<T> TextView<T> {//for<'a> FnMut(&'a T, &'a BackendState) -> &'a str + 'static
-	pub fn new<A: TextViewer<T>>(txt_buffer_view: A, highlightable: bool) -> Self {
+	pub fn new(highlightable: bool) -> Self {
 		Self {
-			txt_buffer_view: vec![Box::new(txt_buffer_view)], highlightable, selected: false
+			txt_buffer_view: vec![], highlightable, selected: false
 		}
 	}
 	pub fn add_new<A: TextViewer<T>>(mut self, buffer_view: A) -> TextView<T> {
-		self.txt_buffer_view.push(Box::new(buffer_view));
+		self.add_new_ref(buffer_view);
+		self
+	}
+	pub fn add_new_ref<A: TextViewer<T>>(&mut self, buffer_view: A) -> &mut TextView<T> {
+		self.txt_buffer_view.push(Viewer(Box::new(buffer_view)));
+		self
+	}
+	pub fn add_<S: Into<String> + 'static>(mut self, str: S) -> TextView<T> {
+		self.add(str);
+		self
+	}
+	pub fn add<S: Into<String> + 'static>(&mut self, str: S) -> &mut TextView<T> {
+		self.txt_buffer_view.push(Data(str.into()));
 		self
 	}
 }
@@ -507,7 +523,13 @@ impl<T> Element<T> for TextView<T> {
 		let style = if self.selected {
 			Style::default().fg(Color::LightBlue)
 		} else {Style::default()};
-		self.txt_buffer_view.iter_mut().map(|it| Span::styled(it(owner, state), style)).collect()
+		self.txt_buffer_view.iter_mut().map(|it| {
+			let data = match it {
+				Viewer(it) => {it(owner, state)}
+				Data(it) => {it}
+			};
+			Span::styled(data, style)
+		}).collect()
 	}
 }
 #[macro_export] macro_rules! bvec {

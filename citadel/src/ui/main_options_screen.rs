@@ -11,6 +11,7 @@ use std::io::Stdout;
 use tui::Frame;
 use tui::backend::CrosstermBackend;
 use crate::ui::export_control::ExportControl;
+use crate::ui::test_screen::TestScreen;
 
 pub struct MainOptionsScreen {
     screen: Option<Screen<MainOptionsScreen>>,
@@ -37,6 +38,13 @@ impl MainOptionsScreen {
             }),
             ButtonElement::new_("Export/Upload Generator", false, move |_, _, state| {
                 add_screen(ExportControl::new())
+            }),
+            ButtonElement::new_("Test Connection", false, move |_, _, state| {
+                if state.known_generators.is_empty() {
+                    add_screen(DialogueBox::new("Error", "No Generators Available"))
+                } else {
+                    add_screen(TestScreen::new(state))
+                }
             }),
             ButtonElement::new_("Exit", false, move |_, _, _| {
                 exit_screen()

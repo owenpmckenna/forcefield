@@ -50,9 +50,9 @@ impl RouteSetupScreen {
 		Box::new(btn)
     }
 	pub fn selected_gen_button(index: usize) -> Box<dyn Element<Self>> {
-		Box::new(TextView::new(move |it: &Self, _| {
+		Box::new(TextView::new(false).add_new(move |it: &Self, _| {
 			&it.current_selected[index].2
-		}, false))
+		}))
 	}
 	fn selected_to_text(index: usize, it: &String, state: &BackendState) -> (usize, Endpoint, String, Option<Port>) {
 		let end = &state.endpoints_used[index];

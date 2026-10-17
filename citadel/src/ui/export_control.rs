@@ -38,8 +38,8 @@ impl ExportControl {
 	}
 	pub(crate) fn new() -> ExportControl {
 		let list: Vec<Box<dyn Element<Self>>> = bvec![
-			TextView::new(|_, _| "x86 (linux)", true),
-			TextView::new(|_, _| "aarch64 (linux)", true),
+			TextView::new(true).add_("x86 (linux)"),
+			TextView::new(true).add_("aarch64 (linux)"),
 		];
 		let mut arch_pane = Pane::new("Architecture", list);
 		arch_pane.render_as_list = true;
@@ -87,7 +87,7 @@ impl ExportControl {
 		];
 		let mut ssh_pane = Pane::new("Upload Via SSH", ssh_list);
 		ssh_pane.render_as_list = true;
-		let screen = Some(Screen::new(vec![arch_pane, export_file_pane, ssh_pane]).unwrap());
+		let screen = Some(Screen::new(vec![arch_pane, ssh_pane, export_file_pane]).unwrap());
 		Self {
 			screen,
 			file_to_export: "./forcefield_51820".into(),

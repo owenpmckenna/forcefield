@@ -5,12 +5,13 @@ use crate::ui::control_connection_screen::ControlConnectionScreen;
 use crate::ui::dialogue_box::DialogueBox;
 use crate::ui::setup_route::RouteSetupScreen;
 use crate::ui::ui_main::{KeyResult, RenderWidget, add_screen, exit_screen, get_from_queue};
-use crate::ui_utils::screen::{ButtonElement, Element, Pane, Screen};
+use crate::ui_utils::screen::{BasicRenderWidget, ButtonElement, Element, Pane, Screen};
 use crossterm::event::KeyEvent;
 use std::io::Stdout;
 use tui::Frame;
 use tui::backend::CrosstermBackend;
 use crate::ui::export_control::ExportControl;
+use crate::ui::server_connect_screen::ServerConnectScreen;
 use crate::ui::test_screen::TestScreen;
 
 pub struct MainOptionsScreen {
@@ -21,6 +22,9 @@ impl MainOptionsScreen {
         let buttons: Vec<Box<dyn Element<Self>>> = bvec![
             ButtonElement::new_("Connect To Generator", false, move |_, _, _| {
                 add_screen(ConnectToGeneratorScreen::new())
+            }),
+            ButtonElement::new_("Add Manual Wireguard", false, move |_, _, _| {
+                add_screen(ServerConnectScreen::new())
             }),
             ButtonElement::new_("Control Generators", false, move |_, _, state| {
                 if state.known_generators.is_empty() {
@@ -56,7 +60,7 @@ impl MainOptionsScreen {
         MainOptionsScreen { screen: Some(screen) }
     }
 }
-impl RenderWidget for MainOptionsScreen {
+/*impl RenderWidget for MainOptionsScreen {
     fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState) {
         let size = rect.size();
         let mut screen = self.screen.take().unwrap();
@@ -70,5 +74,10 @@ impl RenderWidget for MainOptionsScreen {
         let _ = self.screen.insert(screen);
 
         get_from_queue().unwrap_or(KeyResult::Passup(key_event))
+    }
+}*/
+impl BasicRenderWidget<MainOptionsScreen> for MainOptionsScreen {
+    fn get_screen_option(&mut self) -> &mut Option<Screen<MainOptionsScreen>> {
+        &mut self.screen
     }
 }

@@ -39,6 +39,7 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=$PROGRAM
+WorkingDirectory=/opt/forcefield
 User=root
 Restart=on-failure
 

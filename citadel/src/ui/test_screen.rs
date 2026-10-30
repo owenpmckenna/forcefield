@@ -1,6 +1,8 @@
 use crate::bvec;
 use crate::control_connection::ControlConnection;
+use crate::handshaker::{Peer, PeerData};
 use crate::state::BackendState;
+use crate::ui::test_screen::TextState::{CompletedGood, InProgress, InProgressErr, WaitingServer};
 use crate::ui::ui_main::{KeyResult, RenderWidget, exit_screen, get_from_queue};
 use crate::ui_utils::screen;
 use crate::ui_utils::screen::{ButtonElement, Element, Pane, Screen, TextView};
@@ -8,18 +10,25 @@ use chacha20poly1305::XChaCha20Poly1305;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use crossterm::event::KeyEvent;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::error::Error;
 use std::io::Stdout;
 use std::net::SocketAddr;
 use std::thread;
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use tui::Frame;
 use tui::backend::CrosstermBackend;
+use tui::style::{Color, Style};
 
 pub struct TestScreen {
 	stop_sender: Sender<()>,
 	info_receiver: Receiver<Info>,
 	screen: Option<Screen<Self>>,
+}
+enum TestInstruction {
+	Generator(SocketAddr, String, XChaCha20Poly1305),
+	Server(String)
 }
 impl TestScreen {
 	pub fn new(state: &BackendState) -> Self {
@@ -30,7 +39,10 @@ impl TestScreen {
 		});
 		let wgs: Vec<_> = state.current_wg_ids.iter().map(|it| {
 			let ge = state.get_by_id(it).unwrap();
-			((ge.internal_ip_v4, ge.config_port).into(), ge.id.clone(), ge.get_cipher())
+			match ge {
+				Peer::Ge(ge) => {TestInstruction::Generator((ge.internal_ip_v4, ge.config_port).into(), ge.get_id().clone(), ge.get_cipher())}
+				Peer::Server(it) => {TestInstruction::Server(it.id.clone())}
+			}
 		}).collect();
 		let _ = thread::spawn(move || {
 			let _ = Self::thread(wgs, info_sender, stop_receiver);
@@ -40,8 +52,11 @@ impl TestScreen {
 		let screen = Some(Screen::new(vec![main_pane]).unwrap());
 		Self { screen, stop_sender, info_receiver }
 	}
-	fn thread(endpoints: Vec<(SocketAddr, String, XChaCha20Poly1305)>, info_sender: Sender<Info>, stop_receiver: Receiver<()>) -> Result<(), Box<dyn std::error::Error>> {
-		for (addr, id, cipher) in endpoints {
+	fn thread(endpoints: Vec<TestInstruction>, info_sender: Sender<Info>, stop_receiver: Receiver<()>) -> Result<(), Box<dyn std::error::Error>> {
+		for point in endpoints {
+			let (addr, id, cipher) = if let TestInstruction::Generator(addr, id, cipher) = point {
+				(addr, id, cipher)
+			} else {continue};
 			info_sender.send(Info::StartingConnection {
 				id: id.clone()
 			})?;
@@ -51,6 +66,7 @@ impl TestScreen {
 			let mut x = None;
 			let mut num = 0;
 			while x.is_none() {
+				sleep(Duration::from_millis(350));
 				match ControlConnection::connect_assume_id(addr, &id, cipher.clone()) {
 					Ok(it) => {x = Some(it);}
 					Err(it) => {
@@ -111,22 +127,54 @@ impl TestScreen {
 			} else {"/"}
 		}
 	}
-	fn gen_txt_view(id: String, done: bool, retry: usize, error: Option<String>, state: &BackendState) -> TextView<Self> {
+	fn gen_txt_view(id: String, status: TextState, state: &BackendState) -> TextView<Self> {
 		let ge = state.get_by_id(&id).unwrap();
-		let desc = ge.description.clone();
+		let desc = ge.get_description().clone();
 		let mut view: TextView<Self> = TextView::new(false);
-		view.add(if !done {"Connecting to generator: "} else {"Connected to generator: "});
+		view.add(status.desc().to_string());
 		view.add(format!("{}: ({}) ", desc, id));
-		if let Some(failure) = error {
-			view.add(format!("error: \"{}\" ", failure));
+		if let InProgressErr(retry, err) = &status {
+			view.add(format!("error: \"{}\" ", err));
+			view.add(format!("retries: {} ", *retry));
 		}
-		if retry > 0 {
-			view.add(format!("retries: {} ", retry));
-		}
-		if !done {
+		if status.is_completed() {
 			view.add_new_ref(Self::spinning_wheel());
 		}
+
+		view.add(" █");
+		let color = match &status {
+			InProgress => {Color::Yellow}
+			InProgressErr(_, _) => {Color::Red}
+			WaitingServer(_) => {Color::Blue}
+			CompletedGood => {Color::Green}
+		};
+		view.add_override_style(Style::default().fg(color));
 		view
+	}
+}
+
+enum TextState {
+	InProgress,
+	InProgressErr(usize, String),
+	WaitingServer(Receiver<bool>),
+	CompletedGood
+}
+impl TextState {
+	fn desc(&self) -> &str {
+		match self {
+			InProgress => {"Connecting to generator: "}
+			InProgressErr(_, _) => {"Connecting to generator: "}
+			WaitingServer(_) => {"Waiting to check server..."}
+			CompletedGood => {"Connected to generator: "}
+		}
+	}
+	fn is_completed(&self) -> bool {
+		match self {
+			InProgress => false,
+			InProgressErr(_, _) => false,
+			WaitingServer(_) => false,
+			CompletedGood => true
+		}
 	}
 }
 impl RenderWidget for TestScreen {
@@ -141,15 +189,25 @@ impl RenderWidget for TestScreen {
 			val
 		} else {return};
 
+		let mut message_passers: HashMap<String, Sender<bool>> = HashMap::new();
+
 		match info {
 			Info::StartingConnection { id } => {
-				self.add_line(Self::gen_txt_view(id, false, 0, None, state));
+				self.add_line(Self::gen_txt_view(id, InProgress, state));
+			}
+			Info::SkippingServer { id } => {
+				let (tx, rx) = unbounded();
+				message_passers.insert(id.clone(), tx);
+				self.add_line(Self::gen_txt_view(id, WaitingServer(rx), state));
 			}
 			Info::RetryingConnection { retry, reason, id } => {
-				self.replace_last_line(Self::gen_txt_view(id, false, retry, Some(reason), state));
+				self.replace_last_line(Self::gen_txt_view(id, InProgressErr(retry, reason), state));
 			}
 			Info::SuccessfullyConnected {id} => {
-				self.replace_last_line(Self::gen_txt_view(id, true, 0, None, state));
+				self.replace_last_line(Self::gen_txt_view(id, CompletedGood, state));
+			}
+			Info::NotifyServerDecision {good, id} => {
+
 			}
 			Info::LookingForIp => {
 				self.add_line(TextView::new(false).add_("Getting public IP - ").add_new(Self::spinning_wheel()));
@@ -193,8 +251,10 @@ impl Drop for TestScreen {
 }
 enum Info {
 	StartingConnection {id: String},
+	SkippingServer {id: String},
 	RetryingConnection {id: String, retry: usize, reason: String},
 	SuccessfullyConnected {id: String},
+	NotifyServerDecision {id: String, good: bool},
 	LookingForIp,
 	GotIp {resp: IpInfoResponse},
 	NetworkFailed {reason: String},

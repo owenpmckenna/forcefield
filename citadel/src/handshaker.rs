@@ -1,21 +1,19 @@
-use std::fmt::{Display, Formatter};
+use crate::generic_wireguard_endpoint::WireguardEndpoint;
+use crate::handshaker::Endpoint::{FromPeer, PublicEndpoint, ViaPeer};
+use crate::handshaker::Peer::Ge;
 use crate::state::BackendState;
+use chacha20poly1305::aead::{Aead, Generate, Nonce, Key};
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 use common::errors::{FFError, FFResult};
 use common::ip::Port;
-use common::setup_handshake::{read_packet, write_packet, ConfigMessage};
-use chacha20poly1305::aead::{Aead, OsRng};
-use chacha20poly1305::{AeadCore, Key, KeyInit, XChaCha20Poly1305};
-use rsa::pkcs8::DecodePrivateKey;
-use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
+use common::setup_handshake::{ConfigMessage, read_packet, write_packet};
+use common::wireguard::{Route, has_route_for_ip_no_lookup};
+use rsa::Pkcs1v15Encrypt;
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-use std::process::exit;
+use std::fmt::{Display, Formatter};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use rsa::pkcs1::{EncodeRsaPublicKey, LineEnding};
-use tui::text::Spans;
-use crate::handshaker::Endpoint::{FromPeer, PublicEndpoint, ViaPeer};
-use common::wireguard::{has_route_for_ip_no_lookup, Route};
 
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub enum Endpoint {
@@ -28,10 +26,10 @@ pub enum Endpoint {
     FromPeer(SocketAddr, Option<String>)
 }
 impl Endpoint {
-    pub fn from_initial_ip(ip: SocketAddr, lg: Option<&Generator>) -> Self {
+    pub fn from_initial_ip(ip: SocketAddr, lg: Option<&Peer>) -> Self {
         match ip.ip().is_global() {
             true => {PublicEndpoint(ip)}
-            false => {FromPeer(ip, lg.map(|it| it.id.clone()))}
+            false => {FromPeer(ip, lg.map(|it| it.get_id().clone()))}
         }
     }
 }
@@ -54,7 +52,7 @@ pub struct Generator {
     pub internal_ip_v4: Ipv4Addr,
     pub internal_ip_v6: Ipv6Addr,
     #[serde(skip, default)]
-    config_key: OnceLock<Key>,
+    config_key: OnceLock<Key<XChaCha20Poly1305>>,
     pub config_key_bytes: Vec<u8>,
     pub wg_public_key: String,
     pub description: String,
@@ -64,11 +62,14 @@ pub struct Generator {
     pub ws_ports: Vec<u16>
 }
 impl Generator {
-    pub fn get_config_key(&self) -> Key {
-        self.config_key.get_or_init(|| Key::clone_from_slice(&self.config_key_bytes)).clone()
+    fn key_cast(data: &[u8]) -> Key<XChaCha20Poly1305> {
+        *Key::<XChaCha20Poly1305>::cast_from_core(&data.try_into().unwrap())
+    }
+    pub fn get_config_key(&self) -> Key<XChaCha20Poly1305> {
+        self.config_key.get_or_init(|| Self::key_cast(&self.config_key_bytes)).clone()
     }
     pub fn get_cipher(&self) -> XChaCha20Poly1305 {
-        let key: &Key = self.config_key.get_or_init(|| Key::clone_from_slice(&self.config_key_bytes));
+        let key: &Key<XChaCha20Poly1305> = self.config_key.get_or_init(|| Self::key_cast(&self.config_key_bytes));
         XChaCha20Poly1305::new(key)
     }
     pub fn connect_to_generator(ip: String, state: &mut BackendState) -> FFResult<Generator> {
@@ -90,9 +91,9 @@ impl Generator {
         let twgc = our_private.decrypt(Pkcs1v15Encrypt, &twgc)?;
 
         //we turn their config key into a useful cipher struct, then use that to send configs.
-        let config_key: Key = Key::clone_from_slice(&their_config_key);
+        let config_key: Key<XChaCha20Poly1305> = *Key::<XChaCha20Poly1305>::cast_from_core(&their_config_key.try_into().unwrap());
         let config_cipher = XChaCha20Poly1305::new(&config_key);
-        let nonce = XChaCha20Poly1305::generate_nonce(OsRng);
+        let nonce = Nonce::<XChaCha20Poly1305>::generate();
 
         let (ipv4, ipv6, str) = state.next_id()?;
         let msg = ConfigMessage::new(str.clone(), ipv4.to_string(), ipv6.to_string(), ip_addr.port(), state.our_wg_pub.clone());
@@ -119,23 +120,7 @@ impl Generator {
             ws_ports: vec![]
         })
     }
-    ///yeah so... pass in Err(id) if you don't want just a route (eg. internal 10.69.0.x), but a logical next route in a vpn chain (134.62.75.4)
-    pub fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<&Endpoint> {
-        match connected {
-            //we are connected in a chain, and want to find the best way to talk to this generator
-            Ok(connected) => {
-                self.find_best_endpoint_force_lc(routes, connected, connected.last().cloned(), pub_ip)
-            }
-            //We want to know the best way to this generator, from the end of a vpn chain
-            Err(Some(it)) => {
-                self.find_best_endpoint_force_lc(routes, &vec![it.clone()], Some(it), pub_ip)
-            }
-            //we want to know the best way to this generator, from the beginning of a vpn chain
-            Err(None) => {
-                self.find_best_endpoint_force_lc(routes, &vec![], None, pub_ip)
-            }
-        }
-    }
+
     fn find_best_endpoint_force_lc(&self, routes: &Vec<Route>, connected: &Vec<String>, last_connected: Option<String>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<&Endpoint> {
         //prefer routes direct from peer, they're fastest and simplest
         if let Some(ep) = self.endpoints.iter()
@@ -186,7 +171,111 @@ impl Generator {
         } else {"".into()};
         format!("{}{}{}", self.id, conn, desc)
     }
-    pub fn get_best_endpoint(&self) {
+}
+pub trait PeerData {
+    fn get_id(&self) -> &String;
+    fn get_description(&self) -> &String;
+    fn get_description_mut(&mut self) -> &mut String;
+    fn get_generator_text(&self, endpoint: &Option<&Endpoint>) -> String;
+    fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<Endpoint>;
+}
+#[derive(Serialize, Deserialize)]
+pub enum Peer {
+    Ge(Generator),
+    Server(WireguardEndpoint)
+}
+impl Into<Peer> for Generator {
+    fn into(self) -> Peer {
+        Ge(self)
+    }
+}
+impl Into<Peer> for WireguardEndpoint {
+    fn into(self) -> Peer {
+        Peer::Server(self)
+    }
+}
+impl PeerData for Peer {
+    fn get_id(&self) -> &String {
+        match self {
+            Ge(it) => {it.get_id()}
+            Peer::Server(it) => {it.get_id()}
+        }
+    }
 
+    fn get_description(&self) -> &String {
+        match self {
+            Ge(it) => {it.get_description()}
+            Peer::Server(it) => {it.get_description()}
+        }
+    }
+    fn get_description_mut(&mut self) -> &mut String {
+        match self {
+            Ge(it) => {it.get_description_mut()}
+            Peer::Server(it) => {it.get_description_mut()}
+        }
+    }
+
+    fn get_generator_text(&self, endpoint: &Option<&Endpoint>) -> String {
+        match self {
+            Peer::Ge(it) => {it.get_generator_text(endpoint)}
+            Peer::Server(it) => {it.get_generator_text(endpoint)}
+        }
+    }
+
+    fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<Endpoint> {
+        match self {
+            Peer::Ge(it) => {it.find_best_endpoint(routes, connected, pub_ip)}
+            Peer::Server(it) => {it.find_best_endpoint(routes, connected, pub_ip)}
+        }
+    }
+}
+impl Peer {
+    pub fn as_generator(&self) -> Option<&Generator> {
+        if let Ge(it) = self {
+            Some(it)
+        } else {None}
+    }
+    pub fn as_generator_mut(&mut self) -> Option<&mut Generator> {
+        if let Ge(it) = self {
+            Some(it)
+        } else {None}
+    }
+}
+impl PeerData for Generator {
+    fn get_id(&self) -> &String {
+        &self.id
+    }
+
+    fn get_description(&self) -> &String {
+        &self.description
+    }
+    fn get_description_mut(&mut self) -> &mut String {
+        &mut self.description
+    }
+
+    fn get_generator_text(&self, endpoint: &Option<&Endpoint>) -> String {
+        let desc = format!(" - {}", self.description);
+        let conn = if let Some(end) = endpoint {
+            format!(": {}", end)
+        } else {"".into()};
+        format!("{}{}{}", self.id, conn, desc)
+    }
+
+    ///yeah so... pass in Err(id) if you don't want just a route (eg. internal 10.69.0.x), but a logical next route in a vpn chain (134.62.75.4)
+    fn find_best_endpoint(&self, routes: &Vec<Route>, connected: Result<&Vec<String>, Option<String>>, pub_ip: Option<(Option<Ipv6Addr>, Option<Ipv4Addr>)>) -> Option<Endpoint> {
+        match connected {
+            //we are connected in a chain, and want to find the best way to talk to this generator
+            Ok(connected) => {
+                self.find_best_endpoint_force_lc(routes, connected, connected.last().cloned(), pub_ip)
+            }
+            //We want to know the best way to this generator, from the end of a vpn chain
+            Err(Some(it)) => {
+                self.find_best_endpoint_force_lc(routes, &vec![it.clone()], Some(it), pub_ip)
+            }
+            //we want to know the best way to this generator, from the beginning of a vpn chain
+            Err(None) => {
+                self.find_best_endpoint_force_lc(routes, &vec![], None, pub_ip)
+            }
+        }.map(|it| it.clone())
     }
 }

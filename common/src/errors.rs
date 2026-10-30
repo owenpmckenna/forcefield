@@ -6,7 +6,7 @@ use icmp_socket::packet::IcmpPacketBuildError;
 pub enum FFError {
     IP4Deserial,
     OutOfIds,
-    CipherError(aead::Error),
+    CipherError(chacha20poly1305::Error),
     NoGeneratorFoundError(String),
     BadGeneratorId,
     WrongResponseType,
@@ -18,6 +18,9 @@ pub enum FFError {
     NoRealInternetConnection,
     BadCIDR,
     UploadFailed(String),
+    ConfigParseError(String),
+    NoPeersError,
+    NoPeerAddressError,
     BadFileName(String),
 }
 

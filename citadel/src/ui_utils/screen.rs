@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::state::BackendState;
 use crossterm::event::KeyCode::Right;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -12,6 +13,7 @@ use tui::layout::{Alignment, Rect};
 use tui::style::{Color, Style};
 use tui::text::{Span, Spans};
 use tui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use crate::ui::ui_main::{get_from_queue, KeyResult, RenderWidget};
 use crate::ui_utils::screen::TextData::{Data, Viewer};
 
 ///This is a relatively simple tui setup that provides support for what I need: buttons, text input, text, and multiple panes.
@@ -283,9 +285,9 @@ impl<T> Element<T> for ButtonElement<T> {
 			let mut taken = self.on_click.take().unwrap();
 			taken(self, owner, state);
 			let _ = self.on_click.insert(taken);
-		} else if key_event.code == KeyCode::Left {
+		} else if key_event.code == KeyCode::Left && alt_sel > 1 {
 			self.alternate_selected = (self.alternate_selected + alt_sel - 1) % alt_sel;
-		} else if key_event.code == Right {
+		} else if key_event.code == Right && alt_sel > 1 {
 			self.alternate_selected = (self.alternate_selected + 1) % alt_sel;
 		}
 		self.marked_for_removal
@@ -483,13 +485,14 @@ pub enum TextData<T> {
 
 pub struct TextView<T> {
 	txt_buffer_view: Vec<TextData<T>>,
+	override_styles: HashMap<usize, Style>,
 	highlightable: bool,
 	selected: bool
 }
 impl<T> TextView<T> {//for<'a> FnMut(&'a T, &'a BackendState) -> &'a str + 'static
 	pub fn new(highlightable: bool) -> Self {
 		Self {
-			txt_buffer_view: vec![], highlightable, selected: false
+			txt_buffer_view: vec![], override_styles: HashMap::new(), highlightable, selected: false
 		}
 	}
 	pub fn add_new<A: TextViewer<T>>(mut self, buffer_view: A) -> TextView<T> {
@@ -508,6 +511,9 @@ impl<T> TextView<T> {//for<'a> FnMut(&'a T, &'a BackendState) -> &'a str + 'stat
 		self.txt_buffer_view.push(Data(str.into()));
 		self
 	}
+	pub fn add_override_style(&mut self, style: Style) {
+		self.override_styles.insert(self.txt_buffer_view.len() - 1, style);
+	}
 }
 impl<T> Element<T> for TextView<T> {
 	fn on_select(&mut self, _: &mut T, _: &BackendState) -> bool {
@@ -523,12 +529,15 @@ impl<T> Element<T> for TextView<T> {
 		let style = if self.selected {
 			Style::default().fg(Color::LightBlue)
 		} else {Style::default()};
-		self.txt_buffer_view.iter_mut().map(|it| {
+		self.txt_buffer_view.iter_mut().enumerate().map(|(i, it)| {
 			let data = match it {
 				Viewer(it) => {it(owner, state)}
 				Data(it) => {it}
 			};
-			Span::styled(data, style)
+			let style = if let Some(stl) = self.override_styles.get(&i) {
+				stl
+			} else {&style};
+			Span::styled(data, *style)
 		}).collect()
 	}
 }
@@ -538,4 +547,23 @@ impl<T> Element<T> for TextView<T> {
             $(Box::new($item)),*
         ]
     };
+}
+pub trait BasicRenderWidget<T> {
+	fn get_screen_option(&mut self) -> &mut Option<Screen<T>>;
+}
+impl<T> RenderWidget for T where T: BasicRenderWidget<T> {
+	fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState) {
+		let size = rect.size();
+		let mut screen: Screen<Self> = self.get_screen_option().take().unwrap();
+		screen.render(rect, vec![size], self, state);
+		let _ = self.get_screen_option().insert(screen);
+	}
+
+	fn handle_input(&mut self, key_event: KeyEvent, state: &mut BackendState) -> KeyResult {
+		let mut screen: Screen<Self> = self.get_screen_option().take().unwrap();
+		screen.on_key(key_event, self, state);
+		let _ = self.get_screen_option().insert(screen);
+
+		get_from_queue().unwrap_or(KeyResult::Passup(key_event))
+	}
 }

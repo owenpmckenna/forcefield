@@ -1,7 +1,7 @@
 #![feature(ip)]
 #![feature(fn_traits)]
 #![feature(trait_alias)]
-#![feature(try_blocks)]
+#![feature(addr_parse_ascii)]
 
 pub mod state;
 pub mod handshaker;
@@ -9,6 +9,7 @@ pub mod ui;
 mod control_connection;
 pub mod ui_utils;
 pub mod generators;
+pub mod generic_wireguard_endpoint;
 
 use std::io::{stdout, Write};
 use clap::{Parser, Subcommand};

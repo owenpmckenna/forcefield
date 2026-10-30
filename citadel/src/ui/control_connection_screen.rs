@@ -1,5 +1,5 @@
 use crate::control_connection::ControlConnection;
-use crate::handshaker::{Endpoint, Generator};
+use crate::handshaker::{Endpoint, Generator, Peer, PeerData};
 use crate::state::BackendState;
 use crate::ui::dialogue_box::DialogueBox;
 use crate::ui::generator_control_screen_2::GeneratorControlScreen2;
@@ -19,23 +19,20 @@ use tui::text::{Span, Spans, Text};
 use tui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 
 pub struct ControlConnectionScreen {
-    is_on_preroutes: bool,
     preroute_selected: usize,
-    direct_addr: String,
-    direct_addr_cursor: Cursor<Self>,
     routes: Vec<Route>
 }
 impl ControlConnectionScreen {
     pub fn new() -> ControlConnectionScreen {
         ControlConnectionScreen {
-            is_on_preroutes: true,
             preroute_selected: 0,
-            direct_addr: "".to_string(),
-            direct_addr_cursor: Cursor::new(|it: &Self| !it.is_on_preroutes).set_deactive_full_text(),
             routes: get_routes()
         }
     }
-    fn is_device_available(state: &BackendState, generator: &Generator) -> Option<SocketAddr> {
+    fn is_device_available(state: &BackendState, generator: &Peer) -> Option<SocketAddr> {
+        let generator = if let Peer::Ge(ge) = generator {
+            ge
+        } else {return None;};
         let ip = generator.internal_ip_v4.into();
         let address = SocketAddr::new(ip, generator.config_port);
         if let Some(it) = &state.current_wg_setup {
@@ -59,24 +56,36 @@ impl ControlConnectionScreen {
         }
         list
     }
+
+    fn press_enter(&mut self, state: &mut BackendState) -> KeyResult {
+        if !Self::get_available_device_indexes(state).contains(&self.preroute_selected) {
+            let ge = &state.known_generators[self.preroute_selected];
+            return AddScreen(Box::new(GeneratorControlScreen2::new(ge.get_id().clone(), None, state)))
+        }
+        let addr = if let Peer::Ge(ge) = &state.known_generators[self.preroute_selected] {
+            SocketAddr::new(IpAddr::V4(ge.internal_ip_v4), ge.config_port)
+        } else {return Handled};//shouldn't get here, get_available_device_indexes doesn't return Servers
+        match ControlConnection::connect(addr, state) {
+            Ok(it) => {
+                AddScreen(Box::new(GeneratorControlScreen2::new(it.server_id.clone(), Some(it), state)))
+            }
+            Err(it) => {
+                AddScreen(Box::new(DialogueBox::new("Error", &format!("could not connect to device - `{}`", it))))
+            }
+        }
+    }
 }
 impl RenderWidget for ControlConnectionScreen {
     fn render(&mut self, rect: &mut Frame<CrosstermBackend<Stdout>>, state: &mut BackendState) {
-        let available_device_indexes = Self::get_available_device_indexes(state);
-
-        let vertical_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(
-                &[Constraint::Min((2 + state.known_generators.len()) as u16), Constraint::Percentage(50)]
-            )
-            .split(rect.size());
-
         let items: Vec<_> = state.known_generators.iter().map(|ge| {
             let style = if let Some(it) = Self::is_device_available(state, ge) {
                 Style::default().fg(Color::Blue)
             } else {Style::default().fg(Color::Gray)};
-            let desc = format!(" - {}", ge.description);
-            ListItem::new(Text::styled(format!("{}: {}{}", ge.id, ge.internal_ip_v4, desc), style))
+            let ip_str = match ge {
+                Peer::Ge(it) => {it.internal_ip_v4.to_string()}
+                Peer::Server(it) => {"N/A".to_string()}
+            };
+            ListItem::new(Text::styled(format!("{}: {} - ({})", ge.get_id(), ip_str, ge.get_description()), style))
         }).collect();
         let generators = List::new(items)
             .style(Style::default().fg(Color::White))
@@ -88,74 +97,22 @@ impl RenderWidget for ControlConnectionScreen {
                     .border_type(BorderType::Plain),
             )
             .highlight_symbol("> ");
-        if /* !available_device_indexes.is_empty() && */ self.is_on_preroutes {
-            let mut list_state = ListState::default();
-            list_state.select(Some(/*available_device_indexes[*/self.preroute_selected/*]*/));
-            rect.render_stateful_widget(generators, vertical_layout[0], &mut list_state);
-        } else {
-            rect.render_widget(generators, vertical_layout[0]);
-        }
-
-        let text = Spans::from(self.direct_addr_cursor.render(vec![Span::raw(&self.direct_addr)], &self));
-        let ip_entry = Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title("Direct Connection").border_type(BorderType::Plain));
-        rect.render_widget(ip_entry, vertical_layout[1])
+        let mut list_state = ListState::default();
+        list_state.select(Some(/*available_device_indexes[*/self.preroute_selected/*]*/));
+        rect.render_stateful_widget(generators, rect.size(), &mut list_state);
     }
 
     fn handle_input(&mut self, key_event: KeyEvent, state: &mut BackendState) -> KeyResult {
         match key_event.code {
-            KeyCode::Tab => {
-                self.is_on_preroutes = !self.is_on_preroutes;
-                Handled
-            },
             Up | KeyCode::Down => {
                 //let available_device_indexes = Self::get_available_device_indexes(state);
                 //let len = available_device_indexes.len();
                 let len = state.known_generators.len();
-                if !self.is_on_preroutes /*|| available_device_indexes.is_empty()*/ {
-                    return Handled
-                }
                 self.preroute_selected = (self.preroute_selected + if key_event.code == Up {len - 1} else {len + 1}) % len;
                 Handled
             },
-            KeyCode::Char(it) => {
-                if !self.is_on_preroutes {
-                    self.direct_addr.push(it);
-                    self.direct_addr_cursor.update_key();
-                }
-                Handled
-            },
             KeyCode::Enter => {
-                let addr = if self.is_on_preroutes {
-                    //let available_device_indexes = Self::get_available_device_indexes(state);
-                    //if available_device_indexes.is_empty() {
-                    //    return AddScreen(Box::new(DialogueBox::new("Error", "No devices directly connected by Wireguard")))
-                    //}
-                    let ge = &state.known_generators[/*available_device_indexes[*/self.preroute_selected/*]*/];
-                    SocketAddr::new(IpAddr::V4(ge.internal_ip_v4), ge.config_port)
-                } else {
-                    if let Ok(it) = self.direct_addr.parse() {
-                        let end = Endpoint::from_initial_ip(it, state.known_generators.last());
-                        let gene: &mut Generator = &mut state.known_generators[self.preroute_selected];
-                        gene.endpoints.push(end);
-                        self.direct_addr.clear();
-                        it
-                    } else {
-                        return AddScreen(Box::new(DialogueBox::new("Error", "Invalid Ip/Port Entered")))
-                    }
-                };
-                if !Self::get_available_device_indexes(state).contains(&self.preroute_selected) && self.is_on_preroutes {
-                    let ge = &state.known_generators[self.preroute_selected];
-                    return AddScreen(Box::new(GeneratorControlScreen2::new(ge.id.clone(), None, state)))
-                }
-                match ControlConnection::connect(addr, state) {
-                    Ok(it) => {
-                        AddScreen(Box::new(GeneratorControlScreen2::new(it.server_id.clone(), Some(it), state)))
-                    }
-                    Err(it) => {
-                        AddScreen(Box::new(DialogueBox::new("Error", &format!("could not connect to device - `{}`", it))))
-                    }
-                }
+                self.press_enter(state)
             }
             KeyCode::Esc => {
                 Exited

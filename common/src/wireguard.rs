@@ -9,7 +9,7 @@ use std::io::Write;
 use ipnet::{IpNet, Ipv6Net};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
 
 //remember to use `ip route get 8.8.8.8` for test and `ip rule`
@@ -83,21 +83,25 @@ impl Route {
     pub fn new_full(addresses: IpNet, via: Option<IpAddr>, device: Option<String>, src: Option<IpAddr>, proto: Option<String>, metric: Option<u32>) -> Self {
         Self { addresses, via, device, src, proto, metric}
     }
-    fn move_self(&self, cmd: &str) {
+    fn move_self(&self, cmd: &str) -> (i32, String) {
         let q6 = if let IpNet::V6(it) = self.addresses {
             " -6"
         } else {""};
         let cm = format!("ip{} route {} {}", q6, cmd, self);
-        let resp = exec(cm);
+        let (mut code, mut resp) = exec(cm.clone());
         if resp.contains("RTNETLINK answers: File exists") && cmd.eq("add") {
-            self.move_self("replace");
+            (code, resp) = self.move_self("replace");
         }
+        if code != 0 {
+            panic!("ERROR: {} --- {}", resp, cm)
+        }
+        (code, resp)
     }
     pub fn add_self(&self) {
-        self.move_self("add")
+        self.move_self("add");
     }
     pub fn remove_self(&self) {
-        self.move_self("del")
+        self.move_self("del");
     }
 }
 fn empty<T, F>(me: &Option<T>, u: F) -> String where F: FnOnce(&T) -> String {
@@ -150,13 +154,23 @@ impl Wireguard {
                     .args(["client", "-L"])
                     .arg(format!("udp://{}:localhost:{}?timeout_sec=0", ws_port, wg_port))
                     .arg(format!("ws://{}", it))
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .stdin(Stdio::null())
                     .spawn()
                     .unwrap();
                 self.children.push(wst);
                 &format!(" endpoint 127.0.0.1:{}", ws_port)
             }
         };
-        exec(format!("wg set {} peer {} allowed-ips {}{}", self.name, peer.public_key, addrs, endpoint));
+        let mut ntf = tempfile::NamedTempFile::new().unwrap();
+        let psk = if let Some(psk) = &peer.preshared_key {
+            ntf.write_all(psk.as_bytes()).unwrap();
+            let path = ntf.path();
+            format!(" preshared-key {}", path.display())
+        } else {"".to_string()};
+        exec(format!("wg set {} peer {}{} allowed-ips {}{}", self.name, peer.public_key, psk, addrs, endpoint));
+        ntf.close().unwrap();
     }
     pub fn spawn_peer_add(&mut self, peer: WireguardPeer) {
         let last = self.peers.len();
@@ -202,6 +216,7 @@ impl Wireguard {
 #[derive(Clone)]
 pub struct WireguardPeer {
     pub public_key: String,
+    pub preshared_key: Option<String>,
     pub allowed_ips: Vec<IpNet>,
     pub endpoint: EndpointAddr
 }
@@ -223,7 +238,10 @@ impl EndpointAddr {
 }
 impl WireguardPeer {
     pub fn new(public_key: String, allowed_ips: Vec<IpNet>, endpoint: EndpointAddr) -> Self {
-        Self { public_key, allowed_ips, endpoint }
+        Self { public_key, preshared_key: None, allowed_ips, endpoint }
+    }
+    pub fn new_psk(public_key: String, preshared_key: Option<String>, allowed_ips: Vec<IpNet>, endpoint: EndpointAddr) -> Self {
+        Self { public_key, preshared_key, allowed_ips, endpoint }
     }
 }
 
@@ -234,6 +252,7 @@ use serde::{Deserialize, Serialize};
 //use wstunnel::config::{ClientCreationRequest, ServerCreationRequest};
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
+use crate::errors::FFResult;
 
 pub fn generate_wireguard_keys() -> (String, String) {
     let private_key = StaticSecret::random_from_rng(&mut rand::rng());
@@ -244,6 +263,14 @@ pub fn generate_wireguard_keys() -> (String, String) {
 
     (private_b64, public_b64)
 }
+pub fn get_pub_key_for_private(private: &str) -> FFResult<String> {
+    let pk = STANDARD.decode(private.as_bytes())?;
+    let bytes: [u8; 32] = pk.as_slice().clone().try_into()?;
+    let pk = StaticSecret::from(bytes);
+    let pubkey = PublicKey::from(&pk);
+    let public_b64 = STANDARD.encode(pubkey.to_bytes());
+    Ok(public_b64)
+}
 pub fn get_routes() -> Vec<Route> {
     let v4s = get_routes_(true);
     let v6s = get_routes_(false);
@@ -253,7 +280,7 @@ pub fn get_routes() -> Vec<Route> {
     all
 }
 fn get_routes_(v4: bool) -> Vec<Route> {
-    let out = if v4 {
+    let (_, out) = if v4 {
         exec("ip route".into())
     } else {exec("ip -6 route".into())};
     out.split("\n").map(|it| it.trim())
@@ -319,7 +346,7 @@ pub fn has_route_for_ip_no_lookup(ip: IpAddr, routes: &[Route]) -> bool {
        valid_lft forever preferred_lft forever*/
 pub fn get_pub_ipv6_addr(device: &str) -> Option<Ipv6Addr> {
     //inet6 2605:8600:5c0:b2ef:fa54:f6ff:fec6:3ebe/64 scope global
-    let output = exec(format!("ip -6 addr show dev {}", device));
+    let (_, output) = exec(format!("ip -6 addr show dev {}", device));
     let addr_regex = Regex::new(r"inet6 ([a-z0-9:/]+) scope global").unwrap();
     let addr = addr_regex.captures(&output)
         .map(|it| Ipv6Net::from_str(&it[1]).unwrap())?;

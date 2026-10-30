@@ -1,11 +1,12 @@
 use crate::errors::FFError::CipherError;
 use crate::errors::FFResult;
-use chacha20poly1305::aead::{Aead, OsRng};
+use chacha20poly1305::aead::{Aead, Generate, Nonce};
 use chacha20poly1305::{AeadCore, XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use rand::rngs::SysRng;
 
 #[derive(Serialize, Deserialize)]
 pub struct ConfigMessage {
@@ -42,7 +43,8 @@ pub fn write_packet(stream: &mut TcpStream, data: &[u8]) -> FFResult<()> {
     Ok(())
 }
 pub fn write_encrypted_data(stream: &mut TcpStream, cipher: &XChaCha20Poly1305, data: &[u8]) -> FFResult<()> {
-    let nonce = XChaCha20Poly1305::generate_nonce(OsRng);
+    let nonce: Nonce<XChaCha20Poly1305> = Nonce::<XChaCha20Poly1305>::generate();
+    //let nonce = XChaCha20Poly1305::generate_nonce(OsRng);
     let ciphertext = cipher.encrypt(&nonce, data)
         .map_err(|it| CipherError(it))?;
     write_packet(stream, &nonce)?;

@@ -7,3 +7,4 @@ mod control_connection_screen;
 pub mod generator_control_screen_2;
 pub mod export_control;
 pub mod test_screen;
+pub mod server_connect_screen;

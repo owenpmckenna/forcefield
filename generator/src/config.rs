@@ -26,7 +26,7 @@ pub struct Config {
     pub peers: Vec<(String, (Ipv4Addr, Ipv6Addr), EndpointAddr)>,
     pub ws_points: Vec<u16>
 }
-static FILE: &str = "conf.conf";
+static FILE: &str = "./conf.conf";
 impl Config {
     pub fn get_config_key(&self) -> &Key {
         self.config_key.get_or_init(|| *Key::from_slice(&self.config_key_bytes))

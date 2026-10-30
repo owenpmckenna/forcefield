@@ -1,5 +1,5 @@
 use crate::bvec;
-use crate::handshaker::Generator;
+use crate::handshaker::{Generator, Peer};
 use crate::state::BackendState;
 use crate::ui::dialogue_box::DialogueBox;
 use crate::ui::ui_main::{KeyResult, RenderWidget, add_screen, get_from_queue, replace_screen};
@@ -26,7 +26,7 @@ impl ConnectToGeneratorScreen {
                 };
                 let info = format!("Connected to `{}` as {} successfully! Internal IP `{}`. Location: `{}`\nEndpoint: {}", self.entered_ip, it.id, it.internal_ip_v4, desc, it.endpoints[0]);
                 it.description = if let Ok(it) = ip {desc} else {"".to_string()};
-                state.known_generators.push(it);
+                state.known_generators.push(Peer::Ge(it));
                 state.save();
                 replace_screen(DialogueBox::new("Connection success", &info));
             }

@@ -1,5 +1,5 @@
 use crate::bvec;
-use crate::handshaker::Endpoint;
+use crate::handshaker::{Endpoint, Peer, PeerData};
 use crate::state::BackendState;
 use crate::ui::dialogue_box::DialogueBox;
 use crate::ui::ui_main::{KeyResult, RenderWidget, add_screen, get_from_queue, replace_screen};
@@ -44,9 +44,11 @@ impl RouteSetupScreen {
 		btn.other_text = Some(GetTextFnMut::new(move |us: &Self, _| {
 			vec![&us.cached_gen_text[index].0]
 		}));
-		let mut wg_names: Vec<_> = state.known_generators[index].ws_ports.iter().map(|it| it.to_string()).collect();
-		wg_names.insert(0, "Bare".into());
-		btn.alternate_selection = GetTextOptions::new(wg_names);
+		if let Peer::Ge(ge) = &state.known_generators[index] {
+			let mut wg_names: Vec<_> = ge.ws_ports.iter().map(|it| it.to_string()).collect();
+			wg_names.insert(0, "Bare".into());
+			btn.alternate_selection = GetTextOptions::new(wg_names);
+		}
 		Box::new(btn)
     }
 	pub fn selected_gen_button(index: usize) -> Box<dyn Element<Self>> {
@@ -59,7 +61,7 @@ impl RouteSetupScreen {
 		let ws = if let Some(it) = end.1 {
 			format!(" - over WS {}", it)
 		} else {"".into()};
-		(state.known_generators.iter().position(|g| g.id.eq(it)).unwrap(),
+		(state.known_generators.iter().position(|g| g.get_id().eq(it)).unwrap(),
 		 end.0.clone(),
 		 format!("{} - {}{}", it, end.0, ws), end.1)
 	}
@@ -80,7 +82,7 @@ impl RouteSetupScreen {
 			let cs = us.current_selected.iter().cloned().map(|(a, b, _, c)| (a, b, c)).collect();
 			match state.create_wg_setup(cs, us.target_address.to_string()) {
 				Ok(_) => {
-					let out = exec("ip route".into());
+					let (_, out) = exec("ip route".into());
 					let output = format!("`ip route` responded with {} lines:\n{}", out.len(), out);
 					replace_screen(DialogueBox::new("Wireguard Setup Successful", &output))
 				}
@@ -105,7 +107,7 @@ impl RouteSetupScreen {
         se
     }
     fn current_selected_to_ids<'a>(&self, state: &'a BackendState) -> Vec<&'a String> {
-        self.current_selected.iter().map(|it| &state.known_generators[it.0].id).collect()
+        self.current_selected.iter().map(|it| state.known_generators[it.0].get_id()).collect()
     }
 	fn get_id_allowed(&self, state: &BackendState, index: usize) -> bool {
 		if let Some((id, _, _, _)) = self.current_selected.last() && *id == index {
@@ -114,7 +116,7 @@ impl RouteSetupScreen {
 		if self.current_selected.iter().position(|it| it.0 == index).is_some() {
 			return false
 		}
-		let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
+		let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].get_id().clone());
 		//let available_routes = last_id.as_ref().map(|it| state.get_by_id(&it)).flatten()
 		//    .map(|it| it.probable_routes.lock().ok()).flatten();
 		!state.known_generators[index].find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info()).is_none()
@@ -140,13 +142,13 @@ impl RouteSetupScreen {
         if let Some(ind) = self.is_selected(self.current()) {
             self.current_selected.remove(ind);
         } else {
-            let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
+            let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].get_id().clone());
 			let ge = &state.known_generators[self.current()];
             let best = ge.find_best_endpoint(&self.routes, Err(last_id), self.useful_ip_info());
-			let (ws, wst) = if ws_selected == 0 {
-				(None, "".into())
-			} else {let port = ge.ws_ports[ws_selected - 1]; (Some(port), format!(" - over WS {}", port))};
-			let txt = format!("{} - {}{}", ge.id, best.as_ref().unwrap(), wst);
+			let (ws, wst) = if let Peer::Ge(ge) = ge && ws_selected != 0 {
+				let port = ge.ws_ports[ws_selected - 1]; (Some(port), format!(" - over WS {}", port))
+			} else {(None, "".into())};
+			let txt = format!("{} - {}{}", ge.get_id(), best.as_ref().unwrap(), wst);
             self.current_selected.push((self.current(), best.unwrap().clone(), txt, ws));
         }
     }
@@ -154,7 +156,7 @@ impl RouteSetupScreen {
         self.current_selected.iter().position(|(i, _, _, _)| *i == index)
     }
     fn is_selected_ge(&self, state: &BackendState, ge: &str) -> Option<usize> {
-        self.current_selected.iter().position(|(it, _, _, _)| state.known_generators[*it].id == ge)
+        self.current_selected.iter().position(|(it, _, _, _)| state.known_generators[*it].get_id() == ge)
     }
     fn selected_style(&self, sel: bool, has_route: bool) -> Style {
         if sel {
@@ -167,7 +169,7 @@ impl RouteSetupScreen {
     }
     fn selected_text(&mut self, state: &BackendState, index: usize) {
 		//unselected + allowed: white, unselected + disallowed: gray, selected: blue
-        let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].id.clone());
+        let last_id = self.current_selected.last().map(|it| state.known_generators[it.0].get_id().clone());
         let pos = self.is_selected(index);
         let useful_ip_info = if let Some(it) = self.pub_ip && (pos.eq(&Some(0)) || pos.eq(&None)) {
             Some(it)
@@ -175,7 +177,7 @@ impl RouteSetupScreen {
         let best = state.known_generators[index].find_best_endpoint(&self.routes, Err(last_id), useful_ip_info);
         let style = self.selected_style(pos.is_some(), best.is_some());
         let it = &state.known_generators[index];
-        let out = (it.get_generator_text(&best), style);
+        let out = (it.get_generator_text(&best.as_ref()), style);
         if self.cached_gen_text.len() <= index {
             self.cached_gen_text.push(out)
         } else {

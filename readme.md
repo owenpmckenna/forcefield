@@ -1,15 +1,17 @@
 # Forcefield
 
-Forcefield is a multi-hop vpn client and server manager, which allows users to build chains of both self-hosted and commercial VPN servers. 
-This is to reduce the risk from any single entity/server being compromised or otherwise monitored.
+Forcefield is a multi-hop vpn client and server manager, which allows users to build chains of both self-hosted and commercial VPN servers, while also bypassing many common types of firewalls. 
+This is to reduce the risk from any single entity/server being compromised or otherwise monitored. It also makes some common server management tasks easier.
 
 ### Features
 
-* Create multi-hop vpn tunnels
+* Create multi-hop vpn tunnels with ease
 * Automatically manage wireguard keys
 * Tunnel wireguard over websocket to bypass Firewalls or Deep Packet Inspection
 * Fully TUI/CLI based as of now - can be run on headless machines
 * No need to open ports in firewall, can configure "reverse routes" for machines with outbound connections only
+
+![](assets/video.mp4)
 
 ### Why though?
 
@@ -29,22 +31,9 @@ So as long as A) the target generator can connect to a public generator and B) y
 Forcefield does provide the ability to run commands on your target, for all (some of) your C2 needs (lol don't commit crimes people). Forcefield also mostly supports ipv6, but it is still missing some more useful features. 
 
 ### How to use
-
-0. Make sure you have cargo installed. Also, due to tight integration with the kernel networking stack, this project only works on Linux or in WSL.
-1. Download/clone this repo, generate your keys, and run a build.
-```shell
-git clone https://github.com/owenpmckenna/forcefield
-cd forcefield/key
-openssl genrsa -out private_pkcs1.pem 4096
-openssl rsa -in private_pkcs1.pem -pubout -out public.pem
-cd ..
-cargo build --release
-```
-2. Copy the client to your servers. It's at `target/release/generator`. It must be renamed to include the port number after an underscore.
-```shell
-scp ./target/release/generator user@remote-server:/home/user/forcefield_51820
-```
-3. Run all the Forcefield instances as root on every server you want to connect to.
+1. Download one of the binaries, run it as root
+2. Run all the Forcefield instances as root on every server you want to connect to, using the `Export/Upload Generator` tab
+3. Import configs from every 3rd party provider you wish to, using the `Add Manual Wireguard` tab
 4. Execute the citadel program: `./target/release/citadel`. The controls are as follows: Tab to switch panels, Up/Down and Left/Right for most others controls. Enter to select or confirm.
 5. Select "Connect to Generator", enter the IP Address and port (`10.0.0.5:51820`), and press enter to connect. Do this for every machine you want to connect to.
 6. Go down to "Set Wireguard Path" and press enter.

@@ -9,6 +9,7 @@ use std::io::{ErrorKind, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 use common::wireguard::{EndpointAddr, Route};
+use crate::handshaker::{Peer, PeerData};
 
 pub struct ControlConnection {
     pub server_id: String,
@@ -41,8 +42,8 @@ impl ControlConnection {
 
         let bytes = read_packet(&mut stream)?;
         let id = String::from_utf8(bytes)?;
-        let ge = state.known_generators.iter().find(|it| it.id.eq(&id));
-        if let Some(ge) = ge {
+        let ge = state.known_generators.iter().find(|it| it.get_id().eq(&id));
+        if let Some(Peer::Ge(ge)) = ge {
             let mut conn = ControlConnection {
                 server_id: id,
                 stream,
@@ -50,7 +51,7 @@ impl ControlConnection {
             };
             conn.send_heartbeat()?;
             Ok(conn)
-        } else {Err(Box::new(NoGeneratorFoundError(id)))}
+        } else {Err(Box::new(NoGeneratorFoundError(format!("Generator: {} not found or not our client (tried to connect to a 3rd part vpn)", id))))}
     }
     pub fn send_heartbeat(&mut self) -> FFResult<()> {
         let hb_num = rand::rng().next_u64() as usize;

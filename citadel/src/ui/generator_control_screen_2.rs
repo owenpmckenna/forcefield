@@ -1,6 +1,6 @@
 use crate::bvec;
 use crate::control_connection::ControlConnection;
-use crate::handshaker::{Endpoint, Generator};
+use crate::handshaker::{Endpoint, Generator, Peer, PeerData};
 use crate::state::BackendState;
 use crate::ui::dialogue_box::DialogueBox;
 use crate::ui::ui_main::{KeyResult, RenderWidget, add_screen, get_from_queue};
@@ -9,6 +9,7 @@ use common::errors::FFResult;
 use common::wireguard::EndpointAddr::{Active, Passive};
 use crossterm::event::KeyEvent;
 use std::error::Error;
+use std::fmt::Display;
 use std::io::Stdout;
 use std::net::{IpAddr, SocketAddr};
 use tui::Frame;
@@ -29,11 +30,11 @@ pub struct GeneratorControlScreen2 {
 impl GeneratorControlScreen2 {
 	fn endpoint_element(id: usize, ge: &Generator) -> Box<dyn Element<Self>> {
 		let end: Endpoint = ge.endpoints[id].clone();
-		let mut btn: ButtonElement<Self> = ButtonElement::new_(&end.to_string(), false, move |btn, cgs: &mut Self, state: &mut BackendState| {
+		let btn: ButtonElement<Self> = ButtonElement::new_(&end.to_string(), false, move |btn, cgs: &mut Self, state: &mut BackendState| {
 			if !cgs.allowed_to_edit(state, id) {
 				return;
 			}
-			let ge = cgs.get_gen_mut(state);
+			let ge = cgs.get_gen_mut(state).unwrap();
 			let id = ge.endpoints.iter().position(|it| it.eq(&end)).unwrap();
 			let via_peer = if let Endpoint::ViaPeer(it) = &ge.endpoints[id] {
 				Some(it.clone())
@@ -50,7 +51,7 @@ impl GeneratorControlScreen2 {
 					}
 				};
 			}
-			cgs.get_gen_mut(state).endpoints.remove(id);
+			cgs.get_gen_mut(state).unwrap().endpoints.remove(id);
 			btn.marked_for_removal = true;
 			state.save();
 		});
@@ -82,7 +83,7 @@ impl GeneratorControlScreen2 {
 				}
 			}
 			us.ws_port_strings.remove(sel);
-			state.known_generators[us.gen_id].ws_ports.remove(sel);
+			us.get_gen_mut(state).unwrap().ws_ports.remove(sel);
 			state.save();
 		});
 		btn.alternate_selection = GetTextFnMut::new(|us: &Self, _| {
@@ -103,7 +104,7 @@ impl GeneratorControlScreen2 {
 			let conn = us.get_conn();
 			match conn.send_ws(port, true) {
 				Ok(it) => {
-					let ge = &mut state.known_generators[us.gen_id];
+					let ge = us.get_gen_mut(state).unwrap();
 					ge.ws_ports.push(port);
 					us.ws_port_strings.push(port.to_string());
 					state.save();
@@ -151,16 +152,24 @@ impl GeneratorControlScreen2 {
 		} else {"".into()};
 		let text = format!("add via peer: {} ({}){}", next_peer_id, np_endpoint, ws_txt);
 		let mut btn = ButtonElement::new_("", false, move |_, us: &mut Self, state: _| {
-			let conn_stat = us.make_peer_connection(state, np_endpoint, ws);
+			let (ge, next) = if let Some(us) = us.get_gen(state) {
+				if let Peer::Ge(next) = state.get_by_id(&state.get_next_gen(&us.id).unwrap()).unwrap() {
+					(us, next)
+				} else {return;}
+			} else {return;};
+
+			let conn_stat = us.make_peer_connection(state, ge, next, np_endpoint, ws);
 			if let Err(it) = conn_stat {
 				add_screen(DialogueBox::new("Failed to setup peer", &it.to_string()));
 				return;
 			}
-			let ge = us.get_gen_mut(state);
+			let (str, endpoint) = conn_stat.unwrap();
+			let ge = us.get_gen_mut(state).unwrap();
+			ge.endpoints.push(endpoint);
 			let epid = ge.endpoints.len() - 1;
 			us.to_add_endpoints = Some(Self::endpoint_element(epid, ge));
 			state.save();
-			add_screen(DialogueBox::new("Setup peer", &conn_stat.unwrap()));
+			add_screen(DialogueBox::new("Setup peer", &str));
 		});
 		btn.text = text;
 		Box::new(btn)
@@ -168,16 +177,19 @@ impl GeneratorControlScreen2 {
 	pub(crate) fn new(gen_id: String, connection: Option<ControlConnection>, state: &mut BackendState) -> Self {
 		let gen_id = state.get_index_by_id(&gen_id).unwrap();
 		let configs: Vec<Box<dyn Element<Self>>> = bvec![
-			TextView::new(true).add_new(|_, _| "id:").add_new(|a: &Self, b: &BackendState| &a.get_gen(b).id),
-			TextInputElement::new("desc: ", |a: &mut Self, b: _| &mut a.get_gen_mut(b).description, |a: &Self, b: _| &a.get_gen(b).description)
+			TextView::new(true).add_new(|_, _| "id:").add_new(|a: &Self, b: &BackendState| &a.get_peer(b).get_id()),
+			TextInputElement::new("desc: ", |a: &mut Self, b: _| a.get_peer_mut(b).get_description_mut(), |a: &Self, b: _| a.get_peer(b).get_description())
 		];
 		let configure_pane = Pane::new("Configure Generator", configs);
 
 		let ge = &state.known_generators[gen_id];
-		let mut endpoints: Vec<Box<dyn Element<Self>>> = (0..ge.endpoints.len()).map(|i| {
-			Self::endpoint_element(i, ge)
-		}).collect();
-		if let Some((next_peer_id, np_endpoint, ws)) = Self::can_add_via_peer_endpoint(ge, state) {
+		let mut endpoints: Vec<Box<dyn Element<Self>>> = match ge {
+			Peer::Ge(ge) => {(0..ge.endpoints.len()).map(|i| {
+				Self::endpoint_element(i, ge)
+			}).collect()}
+			Peer::Server(_) => {bvec![]}
+		};
+		if let Peer::Ge(ge) = ge && let Some((next_peer_id, np_endpoint, ws)) = Self::can_add_via_peer_endpoint(ge, state) {
 			endpoints.push(Self::gen_add_new_peer_endpoint_btn(next_peer_id, np_endpoint, ws));
 		}
 		let mut endpoint_add = TextInputElement::new("Add Route: ", |it: &mut Self, _| &mut it.new_endpoint_str, |it, _| &it.new_endpoint_str);
@@ -189,18 +201,29 @@ impl GeneratorControlScreen2 {
 			}
 			let sock_addr: SocketAddr = sock_addr.unwrap();
 			if sock_addr.ip().is_global() {
-				us.get_gen_mut(state).endpoints.push(Endpoint::PublicEndpoint(sock_addr))
+				us.get_gen_mut(state).unwrap().endpoints.push(Endpoint::PublicEndpoint(sock_addr))
 			} else {
 				let l_id = state.current_wg_ids.last().map(|it| it.to_string());
-				us.get_gen_mut(state).endpoints.push(Endpoint::FromPeer(sock_addr, l_id));
+				us.get_gen_mut(state).unwrap().endpoints.push(Endpoint::FromPeer(sock_addr, l_id));
 			}
-			let next_endpoint_id = us.get_gen(state).endpoints.len() - 1;
-			let ge = &state.known_generators[gen_id];
+			let next_endpoint_id = us.get_gen(state).unwrap().endpoints.len() - 1;
+			let ge = &state.known_generators[gen_id].as_generator().unwrap();
 			us.to_add_endpoints = Some(Self::endpoint_element(next_endpoint_id, ge));
 			state.save();
 		}));
-		endpoints.push(Box::new(endpoint_add));
+		if let Peer::Ge(_) = ge {
+			endpoints.push(Box::new(endpoint_add));
+		}
 		let endpoints_pane = Pane::new("Endpoints", endpoints);
+
+		//server pane
+		let info_screen: Pane<Self> = if let Peer::Server(srv) = ge {
+			let txt = TextView::new(false).add_("Manual Wireguard Connection:");
+			let endpoint = TextView::new(false).add_(format!("Endpoint: {}", srv.peer_endpoint));
+			let int_ip = TextView::new(false).add_(format!("Interface IP: {}", opt_to_str(srv.interface_ipv4)));
+			let pubkey = TextView::new(false).add_(format!("Public Key: {}", srv.wg_public_key));
+			Pane::new("Info", bvec![txt, endpoint, int_ip, pubkey])
+		} else {endpoints_pane};
 
 		let control_pane = if let Some(conn) = &connection {
 			let elements = Self::gen_ctrl_btns();
@@ -209,25 +232,31 @@ impl GeneratorControlScreen2 {
 			Some(control_pane)
 		} else {None};
 
-		let mut screen = Screen::new(vec![configure_pane, endpoints_pane]).unwrap();
+		let mut screen = Screen::new(vec![configure_pane, info_screen]).unwrap();
 		if let Some(pane) = control_pane {
 			screen.panes.push(pane);
 		}
+		let ws_port_strings = if let Peer::Ge(ge) = ge {
+			ge.ws_ports.iter().map(|it| it.to_string()).collect()
+		} else {vec![]};
 		Self {
-			gen_id, screen: Some(screen), new_endpoint_str: "".to_string(), connection, to_add_endpoints: None, ws_port_to_add: "".into(), ws_port_strings: ge.ws_ports.iter().map(|it| it.to_string()).collect()
+			gen_id, screen: Some(screen), new_endpoint_str: "".to_string(), connection, to_add_endpoints: None, ws_port_to_add: "".into(), ws_port_strings
 		}
 	}
-	fn get_gen<'a>(&self, state: &'a BackendState) -> &'a Generator {
+	fn get_peer<'a>(&self, state: &'a BackendState) -> &'a Peer {
 		&state.known_generators[self.gen_id]
 	}
-	fn get_gen_mut<'a>(&mut self, state: &'a mut BackendState) -> &'a mut Generator {
+	fn get_peer_mut<'a>(&mut self, state: &'a mut BackendState) -> &'a mut Peer {
 		&mut state.known_generators[self.gen_id]
 	}
+	fn get_gen<'a>(&self, state: &'a BackendState) -> Option<&'a Generator> {
+		state.known_generators[self.gen_id].as_generator()
+	}
+	fn get_gen_mut<'a>(&mut self, state: &'a mut BackendState) -> Option<&'a mut Generator> {
+		state.known_generators[self.gen_id].as_generator_mut()
+	}
 
-	fn make_peer_connection(&mut self, state: &mut BackendState, peer_via_endpoint: SocketAddr, ws: Option<Port>) -> FFResult<String> {
-		let us = self.get_gen(state);
-		let next = state.get_by_id(&state.get_next_gen(&us.id).unwrap()).unwrap();
-
+	fn make_peer_connection(&mut self, state: &BackendState, us: &Generator, next: &Generator, peer_via_endpoint: SocketAddr, ws: Option<Port>) -> FFResult<(String, Endpoint)> {
 		let pve = if let Some(ws) = ws {
 			EndpointAddr::ActiveWstunnel((peer_via_endpoint.ip(), ws).into(), peer_via_endpoint.port())
 		} else {Active(peer_via_endpoint)};
@@ -237,15 +266,13 @@ impl GeneratorControlScreen2 {
 		let n_routes = next_conn.order_create_wg(&us.wg_public_key, us.internal_ip_v4, us.internal_ip_v6, Passive)?;
 		let u_routes = us_conn.order_create_wg(&next.wg_public_key, next.internal_ip_v4, next.internal_ip_v6, pve)?;
 		let next = next.id.clone();//yeah lifetime name shadowing shut up
-		let us = self.get_gen_mut(state);
-		us.endpoints.push(Endpoint::ViaPeer(next.clone()));
 		let n_routes = n_routes.into_iter().map(|it| it.to_string()).collect::<Vec<_>>().join("\n");
 		let u_routes = u_routes.into_iter().map(|it| it.to_string()).collect::<Vec<_>>().join("\n");
-		Ok(format!("Success!\nNext ({}) routes:\n{}\nOur ({}) routes:\n{}", next, n_routes, us.id, u_routes))
+		Ok((format!("Success!\nNext ({}) routes:\n{}\nOur ({}) routes:\n{}", next, n_routes, us.id, u_routes), Endpoint::ViaPeer(next.clone())))
 	}
 	fn remove_peer_connection(&mut self, state: &BackendState, endpoint_peer: &str) -> FFResult<String> {
-		let us = self.get_gen(state);
-		let next = state.get_by_id(endpoint_peer).unwrap();
+		let us = self.get_gen(state).unwrap();
+		let next = state.get_by_id(endpoint_peer).unwrap().as_generator().unwrap();
 		let us_conn = self.connection.as_mut().unwrap();
 		us_conn.send_heartbeat()?;
 		let mut next_conn = ControlConnection::connect((next.internal_ip_v4, next.config_port).into(), state)?;
@@ -256,7 +283,9 @@ impl GeneratorControlScreen2 {
 		Ok(format!("Success!\nNext ({}) routes:\n{}\nOur ({}) routes:\n{}", next.id, n_routes, us.id, u_routes))
 	}
 	fn allowed_to_edit(&self, state: &BackendState, endpoint: usize) -> bool {
-		let ge = self.get_gen(state);
+		let ge = if let Some(ge) = self.get_gen(state) {
+			ge
+		} else {return false;};
 		//you cannot remove the endpoint we're using to talk to the device, that's dumb
 		for it in 0..state.current_wg_ids.len() {
 			if !state.current_wg_ids[it].eq(&ge.id) {
@@ -321,5 +350,11 @@ impl RenderWidget for GeneratorControlScreen2 {
 		}
 
 		get_from_queue().unwrap_or(KeyResult::Passup(key_event))
+	}
+}
+fn opt_to_str<T: Display>(opt: Option<T>) -> String {
+	match opt {
+		None => {"N/A".to_string()}
+		Some(it) => {it.to_string()}
 	}
 }

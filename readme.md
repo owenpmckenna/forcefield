@@ -1,7 +1,9 @@
 # Forcefield
 
 Forcefield is a multi-hop vpn client and server manager, which allows users to build chains of both self-hosted and commercial VPN servers, while also bypassing many common types of firewalls. 
-This is to reduce the risk from any single entity/server being compromised or otherwise monitored. It also makes some common server management tasks easier. Forcefield only runs on Linux.
+This is to reduce the risk from any single entity/server being compromised or otherwise monitored. It also makes some common server management tasks easier. 
+
+Forcefield only runs on Linux because of tight integration with the networking stack.
 
 ### Features
 

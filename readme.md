@@ -11,7 +11,7 @@ This is to reduce the risk from any single entity/server being compromised or ot
 * Fully TUI/CLI based as of now - can be run on headless machines
 * No need to open ports in firewall, can configure "reverse routes" for machines with outbound connections only
 
-![Demo Video (not on youtube, sorry)](assets/video.mp4)
+[![Demo Video](https://img.youtube.com/vi/9hitwGb5b1E/0.jpg)](https://www.youtube.com/watch?v=9hitwGb5b1E)
 
 ### Why though?
 

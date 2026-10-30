@@ -1,7 +1,7 @@
 # Forcefield
 
 Forcefield is a multi-hop vpn client and server manager, which allows users to build chains of both self-hosted and commercial VPN servers, while also bypassing many common types of firewalls. 
-This is to reduce the risk from any single entity/server being compromised or otherwise monitored. It also makes some common server management tasks easier.
+This is to reduce the risk from any single entity/server being compromised or otherwise monitored. It also makes some common server management tasks easier. Forcefield only runs on Linux.
 
 ### Features
 
@@ -34,6 +34,7 @@ So as long as A) the target generator can connect to a public generator and B) y
 Forcefield does provide the ability to run commands on your target, for all (some of) your C2 needs (lol don't commit crimes people). Forcefield also mostly supports ipv6, but it is still missing some more useful features. 
 
 ### How to use
+0. Download wireguard. `sudo apt install wireguard` or `sudo pacman -S wireguard-tools` for most of you
 1. Download one of the binaries, run it as root
 2. Run all the Forcefield instances as root on every server you want to connect to, using the `Export/Upload Generator` tab
 3. Import configs from every 3rd party provider you wish to, using the `Add Manual Wireguard` tab

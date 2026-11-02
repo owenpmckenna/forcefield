@@ -37,13 +37,12 @@ Forcefield does provide the ability to run commands on your target, for all (som
 
 ### How to use
 0. Download wireguard. `sudo apt install wireguard` or `sudo pacman -S wireguard-tools` for most of you
-1. Download one of the binaries, run it as root
+1. Download one of the binaries, run it as root. The controls are as follows: Tab to switch panels, Up/Down and Left/Right for most others controls. Enter to select or confirm.
 2. Run all the Forcefield instances as root on every server you want to connect to, using the `Export/Upload Generator` tab
 3. Import configs from every 3rd party provider you wish to, using the `Add Manual Wireguard` tab
-4. Execute the citadel program: `./target/release/citadel`. The controls are as follows: Tab to switch panels, Up/Down and Left/Right for most others controls. Enter to select or confirm.
-5. Select "Connect to Generator", enter the IP Address and port (`10.0.0.5:51820`), and press enter to connect. Do this for every machine you want to connect to.
-6. Go down to "Set Wireguard Path" and press enter.
-7. Select the servers you want to use, in the order you want to use them (Up/Down, Enter to select, left/right to set Websocket port). Then press Tab, enter the CIDRs that you want to talk to (or leave them the way they are), before pressing down and enter to confirm.
-8. Test your internet. See if it works.
-9. Try configuring a Generator. Go to "Control Generators" and select a generator, then do whatever you want.
-10. (Optional) Configure a Generator in the middle of the chain. You should see a "Add Reverse Route Via ___" in the Routes column. Navigate to it and press enter. Now you will still be able to connect to your generator when it's behind a firewall/NAT
+4. Select "Connect to Generator", enter the IP Address and port (`10.0.0.5:51820`), and press enter to connect. Do this for every machine you want to connect to.
+5. Go down to "Set Wireguard Path" and press enter.
+6. Select the servers you want to use, in the order you want to use them (Up/Down, Enter to select, left/right to set Websocket port). Then press Tab, enter the CIDRs that you want to talk to (or leave them the way they are), before pressing down and enter to confirm.
+7. Test your internet. See if it works.
+8. Try configuring a Generator. Go to "Control Generators" and select a generator, then do whatever you want.
+9. (Optional) Configure a Generator in the middle of the chain. You should see a "Add Reverse Route Via ___" in the Routes column. Navigate to it and press enter. Now you will still be able to connect to your generator when it's behind a firewall/NAT

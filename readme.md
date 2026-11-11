@@ -40,7 +40,7 @@ Forcefield does provide the ability to run commands on your target, for all (som
 1. Download one of the binaries, run it as root. The controls are as follows: Tab to switch panels, Up/Down and Left/Right for most others controls. Enter to select or confirm.
 2. Run all the Forcefield instances as root on every server you want to connect to, using the `Export/Upload Generator` tab
 3. Import configs from every 3rd party provider you wish to, using the `Add Manual Wireguard` tab
-4. Select "Connect to Generator", enter the IP Address and port (`10.0.0.5:51820`), and press enter to connect. Do this for every machine you want to connect to.
+4. Select "Connect to Generator", enter the IP Address and port (eg. `10.0.0.5:51820`), and press enter to connect. Do this for every machine you want to connect to.
 5. Go down to "Set Wireguard Path" and press enter.
 6. Select the servers you want to use, in the order you want to use them (Up/Down, Enter to select, left/right to set Websocket port). Then press Tab, enter the CIDRs that you want to talk to (or leave them the way they are), before pressing down and enter to confirm.
 7. Test your internet. See if it works.
